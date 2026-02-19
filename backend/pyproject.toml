@@ -1,0 +1,19 @@
+[project]
+name = "good-strands-graph"
+version = "0.1.0"
+description = "Agentic commerce book recommendation agent powered by Neo4j and AWS Strands"
+requires-python = ">=3.11"
+dependencies = [
+    "strands-agents",
+    "strands-agents-tools",
+    "neo4j-agent-memory[aws]",
+    "neo4j",
+    "fastapi",
+    "uvicorn[standard]",
+    "pydantic",
+    "pydantic-settings",
+    "python-dotenv",
+]
+
+[dependency-groups]
+dev = []

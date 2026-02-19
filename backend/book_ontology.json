@@ -1,0 +1,89 @@
+{
+  "name": "book_recommendation",
+  "version": "1.0",
+  "description": "Book recommendation domain ontology for mystery/thriller/crime fiction",
+  "entity_types": [
+    {
+      "name": "BOOK",
+      "description": "A book or novel, identified by title",
+      "subtypes": ["NOVEL", "SHORT_STORY", "ANTHOLOGY", "GRAPHIC_NOVEL"],
+      "attributes": ["title", "isbn", "publication_year", "rating"],
+      "color": "#4CAF50"
+    },
+    {
+      "name": "AUTHOR",
+      "description": "A book author or writer",
+      "subtypes": [],
+      "attributes": ["name", "nationality"],
+      "color": "#2196F3"
+    },
+    {
+      "name": "GENRE",
+      "description": "A book genre, sub-genre, or shelf category",
+      "subtypes": ["MYSTERY", "THRILLER", "CRIME", "NOIR", "COZY_MYSTERY", "SUSPENSE", "DETECTIVE"],
+      "attributes": ["name"],
+      "color": "#FF9800"
+    },
+    {
+      "name": "SERIES",
+      "description": "A book series",
+      "subtypes": [],
+      "attributes": ["name", "book_count"],
+      "color": "#9C27B0"
+    },
+    {
+      "name": "PERSON",
+      "description": "A user or person mentioned in conversation",
+      "subtypes": [],
+      "attributes": ["name"],
+      "color": "#F44336"
+    }
+  ],
+  "relation_types": [
+    {
+      "name": "WRITTEN_BY",
+      "description": "Book written by author",
+      "source_types": ["BOOK"],
+      "target_types": ["AUTHOR"]
+    },
+    {
+      "name": "IN_GENRE",
+      "description": "Book belongs to genre",
+      "source_types": ["BOOK"],
+      "target_types": ["GENRE"]
+    },
+    {
+      "name": "PART_OF_SERIES",
+      "description": "Book is part of a series",
+      "source_types": ["BOOK"],
+      "target_types": ["SERIES"]
+    },
+    {
+      "name": "SIMILAR_TO",
+      "description": "Books are similar to each other",
+      "source_types": ["BOOK"],
+      "target_types": ["BOOK"]
+    },
+    {
+      "name": "PREFERS",
+      "description": "User prefers a genre or author",
+      "source_types": ["PERSON"],
+      "target_types": ["GENRE", "AUTHOR"]
+    },
+    {
+      "name": "HAS_READ",
+      "description": "User has read a book",
+      "source_types": ["PERSON"],
+      "target_types": ["BOOK"]
+    },
+    {
+      "name": "WANTS_TO_READ",
+      "description": "User wants to read a book",
+      "source_types": ["PERSON"],
+      "target_types": ["BOOK"]
+    }
+  ],
+  "default_entity_type": "BOOK",
+  "enable_subtypes": true,
+  "strict_types": false
+}
