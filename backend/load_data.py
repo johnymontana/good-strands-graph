@@ -1,10 +1,11 @@
-"""Load Goodreads mystery/thriller/crime books into Neo4j.
+"""Load Goodreads books and reviews into Neo4j.
 
-Reads the JSONL data file line-by-line and batch-loads into Neo4j using
-UNWIND + MERGE for efficiency. Runs in 3 passes:
-  1. Books + Authors + Publishers + Series
-  2. SIMILAR_TO relationships
-  3. Shelf nodes + ON_SHELF relationships (top 10 per book)
+Reads JSONL data files and batch-loads into Neo4j using UNWIND + MERGE.
+Runs in 4 passes:
+  1. Books + Publishers
+  2. Users + Reviews (WROTE_REVIEW / REVIEWS relationships)
+  3. Compute embeddings on Book descriptions (Amazon Titan Embed v2)
+  4. Compute SIMILAR_TO relationships via vector KNN
 
 Usage:
     python load_data.py
@@ -18,6 +19,7 @@ import sys
 import time
 from pathlib import Path
 
+import boto3
 from dotenv import load_dotenv
 from neo4j import GraphDatabase
 
@@ -27,22 +29,73 @@ NEO4J_URI = os.environ.get("NEO4J_URI", "neo4j://localhost:7687")
 NEO4J_USER = os.environ.get("NEO4J_USER", "neo4j")
 NEO4J_PASSWORD = os.environ.get("NEO4J_PASSWORD", "password")
 NEO4J_DATABASE = os.environ.get("NEO4J_DATABASE", "neo4j")
+AWS_REGION = os.environ.get("AWS_REGION", "us-west-2")
+EMBEDDING_MODEL_ID = os.environ.get(
+    "BEDROCK_EMBEDDING_MODEL_ID", "amazon.titan-embed-text-v2:0"
+)
 
-DATA_FILE = Path(__file__).parent.parent / "data" / "goodreads_books_mystery_thriller_crime.json"
+DATA_DIR = Path(__file__).parent.parent / "data"
+BOOKS_FILE = DATA_DIR / "10k-books-demo.json"
+REVIEWS_FILE = DATA_DIR / "10k-book-reviews-demo.json"
 BATCH_SIZE = 500
+EMBEDDING_BATCH_SIZE = 10
+EMBEDDING_DIMENSIONS = 1024
+SIMILARITY_THRESHOLD = 0.7
+SIMILAR_NEIGHBORS = 6  # query k=6 to get top 5 after excluding self
+
+
+def read_jsonl(path: Path):
+    """Yield parsed JSON objects from a JSONL file."""
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                yield json.loads(line)
+
+
+def safe_int(val) -> int | None:
+    """Convert string to int, returning None for empty/invalid values."""
+    if val is None:
+        return None
+    val_str = str(val).strip()
+    if not val_str:
+        return None
+    try:
+        return int(val_str)
+    except (ValueError, TypeError):
+        return None
+
+
+def safe_float(val) -> float | None:
+    """Convert string to float, returning None for empty/invalid values."""
+    if val is None:
+        return None
+    val_str = str(val).strip()
+    if not val_str:
+        return None
+    try:
+        return float(val_str)
+    except (ValueError, TypeError):
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Constraints, indexes
+# ---------------------------------------------------------------------------
 
 
 def create_constraints_and_indexes(driver):
     """Create uniqueness constraints and indexes before loading."""
     statements = [
         "CREATE CONSTRAINT book_id IF NOT EXISTS FOR (b:Book) REQUIRE b.bookId IS UNIQUE",
-        "CREATE CONSTRAINT author_id IF NOT EXISTS FOR (a:Author) REQUIRE a.authorId IS UNIQUE",
-        "CREATE CONSTRAINT series_id IF NOT EXISTS FOR (s:Series) REQUIRE s.seriesId IS UNIQUE",
-        "CREATE CONSTRAINT shelf_name IF NOT EXISTS FOR (s:Shelf) REQUIRE s.name IS UNIQUE",
         "CREATE CONSTRAINT publisher_name IF NOT EXISTS FOR (p:Publisher) REQUIRE p.name IS UNIQUE",
+        "CREATE CONSTRAINT user_id IF NOT EXISTS FOR (u:User) REQUIRE u.userId IS UNIQUE",
+        "CREATE CONSTRAINT review_id IF NOT EXISTS FOR (r:Review) REQUIRE r.reviewId IS UNIQUE",
         "CREATE INDEX book_title IF NOT EXISTS FOR (b:Book) ON (b.title)",
         "CREATE INDEX book_rating IF NOT EXISTS FOR (b:Book) ON (b.averageRating)",
         "CREATE INDEX book_isbn IF NOT EXISTS FOR (b:Book) ON (b.isbn)",
+        "CREATE INDEX book_pub_year IF NOT EXISTS FOR (b:Book) ON (b.publicationYear)",
+        "CREATE INDEX review_rating IF NOT EXISTS FOR (r:Review) ON (r.rating)",
     ]
     with driver.session(database=NEO4J_DATABASE) as session:
         for stmt in statements:
@@ -60,37 +113,27 @@ def create_fulltext_index(driver):
     print("Created fulltext index 'bookSearch'")
 
 
-def read_jsonl(path: Path):
-    """Yield parsed JSON objects from a JSONL file."""
-    with open(path, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                yield json.loads(line)
+def create_vector_index(driver):
+    """Create vector index on Book embedding for semantic search."""
+    with driver.session(database=NEO4J_DATABASE) as session:
+        session.run(
+            f"""CREATE VECTOR INDEX bookEmbedding IF NOT EXISTS
+            FOR (b:Book) ON (b.embedding)
+            OPTIONS {{indexConfig: {{
+                `vector.dimensions`: {EMBEDDING_DIMENSIONS},
+                `vector.similarity_function`: 'cosine'
+            }}}}"""
+        )
+    print(f"Created vector index 'bookEmbedding' ({EMBEDDING_DIMENSIONS} dims, cosine)")
 
 
-def safe_int(val: str) -> int | None:
-    """Convert string to int, returning None for empty/invalid values."""
-    if not val or val.strip() == "":
-        return None
-    try:
-        return int(val)
-    except (ValueError, TypeError):
-        return None
+# ---------------------------------------------------------------------------
+# Pass 1: Books + Publishers
+# ---------------------------------------------------------------------------
 
 
-def safe_float(val: str) -> float | None:
-    """Convert string to float, returning None for empty/invalid values."""
-    if not val or val.strip() == "":
-        return None
-    try:
-        return float(val)
-    except (ValueError, TypeError):
-        return None
-
-
-def pass1_books_authors_publishers_series(driver):
-    """Pass 1: Create Book nodes with Author, Publisher, and Series relationships."""
+def pass1_books_publishers(driver):
+    """Pass 1: Create Book nodes with Publisher relationships."""
     query = """
     UNWIND $batch AS row
     MERGE (b:Book {bookId: row.book_id})
@@ -110,36 +153,29 @@ def pass1_books_authors_publishers_series(driver):
         b.isEbook = row.is_ebook,
         b.imageUrl = row.image_url,
         b.link = row.link,
-        b.publicationYear = row.publication_year
-    FOREACH (a IN row.authors |
-        MERGE (author:Author {authorId: a.author_id})
-        MERGE (b)-[:WRITTEN_BY]->(author)
-    )
-    FOREACH (_ IN CASE WHEN row.publisher <> '' THEN [1] ELSE [] END |
+        b.publicationYear = row.publication_year,
+        b.publisher = row.publisher
+    FOREACH (_ IN CASE WHEN row.publisher IS NOT NULL AND row.publisher <> '' THEN [1] ELSE [] END |
         MERGE (pub:Publisher {name: row.publisher})
         MERGE (b)-[:PUBLISHED_BY]->(pub)
     )
-    FOREACH (s IN row.series |
-        MERGE (series:Series {seriesId: s})
-        MERGE (b)-[:PART_OF_SERIES]->(series)
-    )
     """
 
-    print("\n=== Pass 1: Books + Authors + Publishers + Series ===")
+    print("\n=== Pass 1: Books + Publishers ===")
     batch = []
     count = 0
 
     with driver.session(database=NEO4J_DATABASE) as session:
-        for record in read_jsonl(DATA_FILE):
+        for record in read_jsonl(BOOKS_FILE):
             row = {
                 "book_id": record["book_id"],
                 "title": record.get("title", ""),
                 "title_without_series": record.get("title_without_series", ""),
                 "description": record.get("description", ""),
-                "average_rating": safe_float(record.get("average_rating", "")),
-                "ratings_count": safe_int(record.get("ratings_count", "")),
-                "text_reviews_count": safe_int(record.get("text_reviews_count", "")),
-                "num_pages": safe_int(record.get("num_pages", "")),
+                "average_rating": safe_float(record.get("average_rating")),
+                "ratings_count": safe_int(record.get("ratings_count")),
+                "text_reviews_count": safe_int(record.get("text_reviews_count")),
+                "num_pages": safe_int(record.get("num_pages")),
                 "format": record.get("format", ""),
                 "language_code": record.get("language_code", ""),
                 "isbn": record.get("isbn", ""),
@@ -149,10 +185,8 @@ def pass1_books_authors_publishers_series(driver):
                 "is_ebook": record.get("is_ebook", "") == "true",
                 "image_url": record.get("image_url", ""),
                 "link": record.get("link", ""),
-                "publication_year": safe_int(record.get("publication_year", "")),
+                "publication_year": safe_int(record.get("publication_year")),
                 "publisher": record.get("publisher", ""),
-                "authors": record.get("authors", []),
-                "series": record.get("series", []),
             }
             batch.append(row)
             count += 1
@@ -171,106 +205,224 @@ def pass1_books_authors_publishers_series(driver):
     return count
 
 
-def pass2_similar_books(driver):
-    """Pass 2: Create SIMILAR_TO relationships between books."""
+# ---------------------------------------------------------------------------
+# Pass 2: Users + Reviews
+# ---------------------------------------------------------------------------
+
+
+def pass2_reviews(driver):
+    """Pass 2: Create User and Review nodes with WROTE_REVIEW and REVIEWS relationships."""
     query = """
     UNWIND $batch AS row
+    MERGE (u:User {userId: row.user_id})
+    CREATE (r:Review {reviewId: row.review_id})
+    SET r.rating = row.rating,
+        r.text = row.text,
+        r.dateAdded = row.date_added,
+        r.dateUpdated = row.date_updated,
+        r.readAt = row.read_at,
+        r.startedAt = row.started_at,
+        r.nVotes = row.n_votes,
+        r.nComments = row.n_comments
+    CREATE (u)-[:WROTE_REVIEW]->(r)
+    WITH r, row
     MATCH (b:Book {bookId: row.book_id})
-    UNWIND row.similar_books AS similar_id
-    MATCH (similar:Book {bookId: similar_id})
-    MERGE (b)-[:SIMILAR_TO]->(similar)
+    CREATE (r)-[:REVIEWS]->(b)
     """
 
-    print("\n=== Pass 2: SIMILAR_TO relationships ===")
+    print("\n=== Pass 2: Users + Reviews ===")
     batch = []
     count = 0
-    skipped = 0
 
     with driver.session(database=NEO4J_DATABASE) as session:
-        for record in read_jsonl(DATA_FILE):
-            similar = record.get("similar_books", [])
-            if not similar:
-                skipped += 1
-                count += 1
-                continue
-
-            batch.append({
+        for record in read_jsonl(REVIEWS_FILE):
+            row = {
+                "review_id": record["review_id"],
                 "book_id": record["book_id"],
-                "similar_books": similar,
-            })
+                "user_id": record["user_id"],
+                "rating": record.get("rating", 0),
+                "text": record.get("text", ""),
+                "date_added": record.get("date_added"),
+                "date_updated": record.get("date_updated"),
+                "read_at": record.get("read_at"),
+                "started_at": record.get("started_at"),
+                "n_votes": record.get("n_votes", 0),
+                "n_comments": record.get("n_comments", 0),
+            }
+            batch.append(row)
             count += 1
 
             if len(batch) >= BATCH_SIZE:
                 session.execute_write(lambda tx: tx.run(query, batch=batch))
                 batch = []
 
-            if count % 5000 == 0:
-                print(f"  Processed {count:,} books ({skipped:,} with no similar books)...")
+            if count % 10000 == 0:
+                print(f"  Processed {count:,} reviews...")
 
         if batch:
             session.execute_write(lambda tx: tx.run(query, batch=batch))
 
-    print(f"  Pass 2 complete: {count:,} books processed, {skipped:,} had no similar books")
+    print(f"  Pass 2 complete: {count:,} reviews loaded")
+    return count
 
 
-def pass3_shelves(driver):
-    """Pass 3: Create Shelf nodes and ON_SHELF relationships (top 10 per book)."""
-    query = """
-    UNWIND $batch AS row
-    MATCH (b:Book {bookId: row.book_id})
-    UNWIND row.shelves AS shelf
-    MERGE (s:Shelf {name: shelf.name})
-    MERGE (b)-[r:ON_SHELF]->(s)
-    SET r.count = shelf.count
-    """
+# ---------------------------------------------------------------------------
+# Pass 3: Compute embeddings
+# ---------------------------------------------------------------------------
 
-    print("\n=== Pass 3: Shelves + ON_SHELF relationships ===")
-    batch = []
-    count = 0
 
+def compute_embedding(bedrock_client, text: str) -> list[float]:
+    """Compute a text embedding using Amazon Titan Embed Text v2."""
+    # Titan v2 max input is ~8192 tokens; truncate long texts
+    truncated = text[:8000]
+    response = bedrock_client.invoke_model(
+        modelId=EMBEDDING_MODEL_ID,
+        body=json.dumps({
+            "inputText": truncated,
+            "dimensions": EMBEDDING_DIMENSIONS,
+        }),
+    )
+    result = json.loads(response["body"].read())
+    return result["embedding"]
+
+
+def pass3_embeddings(driver):
+    """Pass 3: Compute and store embeddings for books with descriptions."""
+    print("\n=== Pass 3: Computing embeddings ===")
+
+    bedrock = boto3.client("bedrock-runtime", region_name=AWS_REGION)
+
+    # Get all books with descriptions that don't have embeddings yet
     with driver.session(database=NEO4J_DATABASE) as session:
-        for record in read_jsonl(DATA_FILE):
-            shelves = record.get("popular_shelves", [])
-            # Take top 10 shelves to avoid explosion
-            top_shelves = [
-                {"name": s["name"], "count": safe_int(s.get("count", "0")) or 0}
-                for s in shelves[:10]
-            ]
+        result = session.run(
+            """
+            MATCH (b:Book)
+            WHERE b.description IS NOT NULL
+              AND b.description <> ''
+              AND b.embedding IS NULL
+            RETURN b.bookId AS bookId, b.description AS description
+            """
+        )
+        books = [dict(r) for r in result]
 
-            if top_shelves:
-                batch.append({
-                    "book_id": record["book_id"],
-                    "shelves": top_shelves,
-                })
+    total = len(books)
+    print(f"  Found {total:,} books needing embeddings")
 
-            count += 1
+    if total == 0:
+        print("  No embeddings to compute")
+        return
 
-            if len(batch) >= BATCH_SIZE:
-                session.execute_write(lambda tx: tx.run(query, batch=batch))
-                batch = []
+    count = 0
+    errors = 0
 
-            if count % 5000 == 0:
-                print(f"  Processed {count:,} books...")
+    for i in range(0, total, EMBEDDING_BATCH_SIZE):
+        batch = books[i : i + EMBEDDING_BATCH_SIZE]
 
-        if batch:
-            session.execute_write(lambda tx: tx.run(query, batch=batch))
+        for book in batch:
+            try:
+                embedding = compute_embedding(bedrock, book["description"])
+                with driver.session(database=NEO4J_DATABASE) as session:
+                    session.execute_write(
+                        lambda tx: tx.run(
+                            "MATCH (b:Book {bookId: $bookId}) SET b.embedding = $embedding",
+                            bookId=book["bookId"],
+                            embedding=embedding,
+                        )
+                    )
+                count += 1
+            except Exception as e:
+                errors += 1
+                if errors <= 5:
+                    print(f"  Error embedding book {book['bookId']}: {e}")
 
-    print(f"  Pass 3 complete: {count:,} books processed")
+        if count % 100 == 0 and count > 0:
+            print(f"  Embedded {count:,}/{total:,} books ({errors} errors)...")
+
+        # Small delay to respect rate limits
+        time.sleep(0.1)
+
+    print(f"  Pass 3 complete: {count:,} embeddings computed ({errors} errors)")
+
+
+# ---------------------------------------------------------------------------
+# Pass 4: SIMILAR_TO from vector KNN
+# ---------------------------------------------------------------------------
+
+
+def pass4_similar_books(driver):
+    """Pass 4: Compute SIMILAR_TO relationships via vector index KNN."""
+    print("\n=== Pass 4: Computing SIMILAR_TO relationships ===")
+
+    # Get all books with embeddings
+    with driver.session(database=NEO4J_DATABASE) as session:
+        result = session.run(
+            """
+            MATCH (b:Book)
+            WHERE b.embedding IS NOT NULL
+            RETURN b.bookId AS bookId
+            """
+        )
+        book_ids = [r["bookId"] for r in result]
+
+    total = len(book_ids)
+    print(f"  Found {total:,} books with embeddings")
+
+    if total == 0:
+        print("  No SIMILAR_TO relationships to compute")
+        return
+
+    count = 0
+    rels_created = 0
+
+    for book_id in book_ids:
+        with driver.session(database=NEO4J_DATABASE) as session:
+            result = session.execute_write(
+                lambda tx: tx.run(
+                    """
+                    MATCH (b:Book {bookId: $bookId})
+                    WHERE b.embedding IS NOT NULL
+                    CALL db.index.vector.queryNodes('bookEmbedding', $k, b.embedding)
+                    YIELD node AS similar, score
+                    WHERE similar.bookId <> b.bookId AND score >= $threshold
+                    MERGE (b)-[r:SIMILAR_TO]->(similar)
+                    SET r.score = score
+                    RETURN count(r) AS created
+                    """,
+                    bookId=book_id,
+                    k=SIMILAR_NEIGHBORS,
+                    threshold=SIMILARITY_THRESHOLD,
+                ).single()
+            )
+            if result:
+                rels_created += result["created"]
+
+        count += 1
+        if count % 500 == 0:
+            print(f"  Processed {count:,}/{total:,} books...")
+
+    print(f"  Pass 4 complete: {rels_created:,} SIMILAR_TO relationships created")
+
+
+# ---------------------------------------------------------------------------
+# Stats
+# ---------------------------------------------------------------------------
 
 
 def print_stats(driver):
     """Print summary statistics after loading."""
     queries = [
         ("Books", "MATCH (b:Book) RETURN count(b) AS count"),
-        ("Authors", "MATCH (a:Author) RETURN count(a) AS count"),
-        ("Series", "MATCH (s:Series) RETURN count(s) AS count"),
         ("Publishers", "MATCH (p:Publisher) RETURN count(p) AS count"),
-        ("Shelves", "MATCH (s:Shelf) RETURN count(s) AS count"),
-        ("WRITTEN_BY", "MATCH ()-[r:WRITTEN_BY]->() RETURN count(r) AS count"),
-        ("SIMILAR_TO", "MATCH ()-[r:SIMILAR_TO]->() RETURN count(r) AS count"),
-        ("ON_SHELF", "MATCH ()-[r:ON_SHELF]->() RETURN count(r) AS count"),
-        ("PART_OF_SERIES", "MATCH ()-[r:PART_OF_SERIES]->() RETURN count(r) AS count"),
+        ("Users", "MATCH (u:User) RETURN count(u) AS count"),
+        ("Reviews", "MATCH (r:Review) RETURN count(r) AS count"),
         ("PUBLISHED_BY", "MATCH ()-[r:PUBLISHED_BY]->() RETURN count(r) AS count"),
+        ("WROTE_REVIEW", "MATCH ()-[r:WROTE_REVIEW]->() RETURN count(r) AS count"),
+        ("REVIEWS", "MATCH ()-[r:REVIEWS]->() RETURN count(r) AS count"),
+        ("SIMILAR_TO", "MATCH ()-[r:SIMILAR_TO]->() RETURN count(r) AS count"),
+        (
+            "Books with embeddings",
+            "MATCH (b:Book) WHERE b.embedding IS NOT NULL RETURN count(b) AS count",
+        ),
     ]
 
     print("\n=== Graph Statistics ===")
@@ -280,9 +432,17 @@ def print_stats(driver):
             print(f"  {label}: {result['count']:,}")
 
 
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+
 def main():
-    if not DATA_FILE.exists():
-        print(f"Error: Data file not found at {DATA_FILE}")
+    if not BOOKS_FILE.exists():
+        print(f"Error: Books file not found at {BOOKS_FILE}")
+        sys.exit(1)
+    if not REVIEWS_FILE.exists():
+        print(f"Error: Reviews file not found at {REVIEWS_FILE}")
         sys.exit(1)
 
     print(f"Connecting to Neo4j at {NEO4J_URI}...")
@@ -295,14 +455,16 @@ def main():
         start = time.time()
 
         create_constraints_and_indexes(driver)
-        pass1_books_authors_publishers_series(driver)
-        pass2_similar_books(driver)
-        pass3_shelves(driver)
+        pass1_books_publishers(driver)
+        pass2_reviews(driver)
         create_fulltext_index(driver)
+        create_vector_index(driver)
+        pass3_embeddings(driver)
+        pass4_similar_books(driver)
         print_stats(driver)
 
         elapsed = time.time() - start
-        print(f"\nTotal time: {elapsed:.1f}s ({elapsed/60:.1f} min)")
+        print(f"\nTotal time: {elapsed:.1f}s ({elapsed / 60:.1f} min)")
 
     finally:
         driver.close()

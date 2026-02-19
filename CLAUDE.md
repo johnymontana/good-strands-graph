@@ -1,60 +1,72 @@
 # Good Strands Graph
 
-Agentic commerce book recommendation app powered by Neo4j context graphs, AWS Strands Agents SDK, and neo4j-agent-memory. Uses a knowledge graph of 219K Goodreads mystery/thriller/crime books.
+Agentic commerce book recommendation app powered by Neo4j context graphs, AWS Strands Agents SDK, and neo4j-agent-memory. Uses a knowledge graph of 10K Goodreads books with 70K user reviews, vector embeddings for semantic search, and a simulated purchase flow.
 
 ## Project Structure
 
 ```
 good-strands-graph/
 ├── data/
-│   └── goodreads_books_mystery_thriller_crime.json   # 219K books, JSONL (1GB)
-├── backend/                                          # Python FastAPI + Strands Agent
+│   ├── 10k-books-demo.json                              # 10K books, JSONL (13.5MB)
+│   └── 10k-book-reviews-demo.json                       # 70K reviews, JSONL (73MB)
+├── backend/                                              # Python FastAPI + Strands Agent
 │   ├── pyproject.toml
-│   ├── load_data.py                                  # Neo4j batch data loader (3-pass)
-│   ├── book_ontology.json                            # Custom entity schema for agent memory
+│   ├── load_data.py                                      # Neo4j batch data loader (4-pass)
+│   ├── book_ontology.json                                # Custom entity schema for agent memory
 │   └── src/
-│       ├── main.py                                   # FastAPI app entry point
-│       ├── config.py                                 # Pydantic Settings (env vars)
+│       ├── main.py                                       # FastAPI app entry point
+│       ├── config.py                                     # Pydantic Settings (env vars)
 │       ├── agents/
-│       │   ├── book_agent.py                         # Strands Agent + 7 @tool functions
-│       │   └── prompts.py                            # System prompt
+│       │   ├── book_agent.py                             # Strands Agent + 11 @tool functions
+│       │   └── prompts.py                                # System prompt
 │       ├── services/
-│       │   └── memory_service.py                     # neo4j-agent-memory MemoryClient
+│       │   └── memory_service.py                         # neo4j-agent-memory MemoryClient
 │       └── api/routes/
-│           └── chat.py                               # POST /api/chat, GET /api/chat/history
-├── frontend/                                         # Next.js App Router + Chakra UI v3
+│           └── chat.py                                   # POST /api/chat (with tool_results), GET /api/chat/history
+├── frontend/                                             # Next.js App Router + Chakra UI v3
 │   ├── src/app/
-│   │   ├── layout.tsx                                # Root layout with Chakra Provider
-│   │   └── page.tsx                                  # Main chat page
+│   │   ├── layout.tsx                                    # Root layout with Chakra Provider
+│   │   └── page.tsx                                      # Main chat page
 │   ├── src/components/
-│   │   ├── ChatInterface.tsx                         # Chat UI with session management
-│   │   ├── MessageBubble.tsx                         # Message display
-│   │   └── BookCard.tsx                              # Book card with rating, cover, badges
+│   │   ├── ChatInterface.tsx                             # Chat UI with session + cart management
+│   │   ├── MessageBubble.tsx                             # Message display with markdown + tool results
+│   │   ├── ToolResultRenderer.tsx                        # Dispatches tool results to correct card type
+│   │   ├── BookCard.tsx                                  # Book card with rating, cover, price, Add to Cart
+│   │   ├── BookCardList.tsx                              # List of BookCards for search results
+│   │   ├── BookDetailCard.tsx                            # Expanded single-book detail view
+│   │   ├── ReviewCard.tsx                                # Single review display
+│   │   ├── ReviewList.tsx                                # List of reviews
+│   │   ├── CartDisplay.tsx                               # Shopping cart with items, totals, checkout
+│   │   └── OrderConfirmation.tsx                         # Post-checkout confirmation
 │   └── src/lib/
-│       └── api.ts                                    # API client
-├── Makefile                                          # Dev commands (install, dev, load-data, etc.)
+│       └── api.ts                                        # API client + TypeScript types
+├── Makefile                                              # Dev commands (install, dev, load-data, etc.)
 └── CLAUDE.md
 ```
 
 ## Tech Stack
 
-- **Backend**: Python 3.11+, FastAPI, AWS Strands Agents SDK (`strands-agents`), `neo4j-agent-memory[aws]`, Neo4j Python driver
-- **Frontend**: Next.js 16 (App Router), Chakra UI v3, TypeScript
+- **Backend**: Python 3.11+, FastAPI, AWS Strands Agents SDK (`strands-agents`), `neo4j-agent-memory[aws]`, Neo4j Python driver, boto3
+- **Frontend**: Next.js 16 (App Router), Chakra UI v3, TypeScript, react-markdown
 - **Database**: Neo4j (book knowledge graph + agent memory)
 - **LLM**: AWS Bedrock (Claude via Strands)
-- **Embeddings**: Amazon Titan Embed Text v2 (via neo4j-agent-memory)
+- **Embeddings**: Amazon Titan Embed Text v2 (1024-dim, for vector search + SIMILAR_TO computation)
 
 ## Graph Data Model
 
 ```
-(:Book)-[:WRITTEN_BY]->(:Author)
-(:Book)-[:PART_OF_SERIES]->(:Series)
-(:Book)-[:SIMILAR_TO]->(:Book)
-(:Book)-[:ON_SHELF {count}]->(:Shelf)
+(:Book {bookId, title, description, averageRating, ratingsCount, numPages, format,
+        isbn, imageUrl, publicationYear, publisher, embedding})
+(:Publisher {name})
+(:User {userId})
+(:Review {reviewId, rating, text, dateAdded, nVotes, nComments})
+
 (:Book)-[:PUBLISHED_BY]->(:Publisher)
+(:User)-[:WROTE_REVIEW]->(:Review)-[:REVIEWS]->(:Book)
+(:Book)-[:SIMILAR_TO {score}]->(:Book)   -- computed from description embeddings
 ```
 
-Key properties on Book: bookId, title, description, averageRating, ratingsCount, numPages, imageUrl, publicationYear, isbn.
+**Indexes**: fulltext `bookSearch` on Book.title+description, vector `bookEmbedding` (1024-dim cosine) on Book.embedding, plus property indexes on Book.title, Book.averageRating, Book.isbn, Book.publicationYear, Review.rating.
 
 ## Environment Variables
 
@@ -82,7 +94,7 @@ CORS_ORIGINS=http://localhost:3000
 
 ```bash
 make install        # Install all dependencies (backend + frontend)
-make load-data      # Load 219K books into Neo4j (run once)
+make load-data      # Load 10K books + 70K reviews + embeddings into Neo4j
 make dev            # Start backend (port 8000) + frontend (port 3000)
 ```
 
@@ -91,7 +103,7 @@ make dev            # Start backend (port 8000) + frontend (port 3000)
 ```bash
 make install-backend    # uv sync in backend/
 make install-frontend   # npm install in frontend/
-make load-data          # Load Goodreads data into Neo4j (~5-10 min)
+make load-data          # Load data into Neo4j (4 passes: books, reviews, embeddings, SIMILAR_TO)
 make backend            # Start FastAPI on port 8000
 make frontend           # Start Next.js on port 3000
 make dev                # Start both backend and frontend
@@ -117,16 +129,32 @@ API docs at http://localhost:8000/docs, frontend at http://localhost:3000
 
 ## Backend Architecture
 
+### Data Loader (`backend/load_data.py`)
+
+4-pass batch loader:
+1. **Books + Publishers**: MERGE Book nodes with all properties, MERGE Publisher nodes with PUBLISHED_BY relationships
+2. **Users + Reviews**: MERGE User nodes, CREATE Review nodes with WROTE_REVIEW and REVIEWS relationships
+3. **Embeddings**: Compute description embeddings via Amazon Titan Embed Text v2, store as `Book.embedding`
+4. **SIMILAR_TO**: KNN via vector index, top 5 neighbors with cosine similarity >= 0.7
+
 ### Agent Tools (in `backend/src/agents/book_agent.py`)
 
-Seven `@tool` decorated functions that query Neo4j via Cypher:
-- `search_books` — fulltext search on title/description
-- `get_book_details` — full book info with author, series, shelves
-- `find_similar_books` — traverse SIMILAR_TO relationships
-- `get_books_by_author` — books by author ID
-- `search_by_genre` — books on a shelf with min rating filter
-- `get_popular_books` — top books by ratings count
-- `find_books_in_series` — all books in a series
+11 `@tool` decorated functions:
+
+**Book discovery** (query Neo4j via Cypher):
+- `search_books` — hybrid vector + fulltext search on title/description
+- `get_book_details` — full book info with publisher and review statistics
+- `get_book_reviews` — user reviews sorted by helpfulness, recency, or rating
+- `find_similar_books` — traverse embedding-based SIMILAR_TO relationships
+- `get_popular_books` — top books by ratings count with optional min rating filter
+- `get_books_by_publisher` — books by publisher name (partial match)
+- `get_recommended_books` — collaborative filtering ("users who liked X also liked Y")
+
+**Commerce** (simulated, in-memory cart via `ToolContext.invocation_state`):
+- `add_to_cart` — add a book to the shopping cart
+- `get_cart` — view current cart contents
+- `remove_from_cart` — remove a book from cart
+- `checkout` — complete purchase, return order confirmation
 
 Plus 4 memory tools from `context_graph_tools()` (neo4j-agent-memory Strands integration):
 - `search_context` — semantic search over conversation history and entities
@@ -136,27 +164,49 @@ Plus 4 memory tools from `context_graph_tools()` (neo4j-agent-memory Strands int
 
 ### Custom Ontology (`backend/book_ontology.json`)
 
-Defines book-domain entity types for agent memory entity extraction: BOOK, AUTHOR, GENRE, SERIES, PERSON. Loaded via `neo4j_agent_memory.schema.models.load_schema_from_file()`.
+Defines book commerce entity types for agent memory: BOOK, PUBLISHER, REVIEWER, PERSON, ORDER. Relations: PUBLISHED_BY, REVIEWED, SIMILAR_TO, PURCHASED, ADDED_TO_CART, PREFERS, HAS_READ, WANTS_TO_READ.
 
 ### API Endpoints
 
-- `POST /api/chat` — send message to agent, returns response + session_id
+- `POST /api/chat` — send message to agent, returns `{response, session_id, tool_results[]}`
 - `GET /api/chat/history/{session_id}` — conversation history
 - `POST /api/chat/search` — semantic search past conversations
 
+The `tool_results` array contains structured data from each tool call (book lists, reviews, cart state, order confirmations) which the frontend renders as rich interactive cards.
+
 ## Frontend Architecture
 
-- Chakra UI v3 with snippets (`components/ui/provider.tsx`, `color-mode.tsx`)
-- `ChatInterface` manages session state, message list, input, loading states
-- `BookCard` displays book with cover image, star rating (RatingGroup), badges for pages/year/genres
-- `MessageBubble` renders user and assistant messages
-- API client in `lib/api.ts` talks to FastAPI backend
+- **Chakra UI v3** with snippets (`components/ui/provider.tsx`, `color-mode.tsx`)
+- **react-markdown** for rendering agent text responses
+- **ChatInterface** manages session state, message list, input, loading states, and cart action callbacks
+- **MessageBubble** renders user (plain text) and assistant (markdown + tool result cards) messages
+- **ToolResultRenderer** dispatches tool results to the correct card component based on `tool_name`
+- **BookCard** displays book with cover image, star rating, price, format/publisher badges, and "Add to Cart" button
+- **BookCardList** renders a vertical list of BookCards for search/popular/similar results
+- **BookDetailCard** expanded single-book view with full description, review stats, and purchase button
+- **ReviewCard** / **ReviewList** renders user reviews with ratings, helpful votes, and dates
+- **CartDisplay** shows cart items with totals and checkout button
+- **OrderConfirmation** shows post-checkout success with order ID and summary
+- API client in `lib/api.ts` with full TypeScript types for all tool result shapes
+
+### Tool → Component Mapping
+
+| Tool Name | Component |
+|-----------|-----------|
+| `search_books`, `get_popular_books`, `find_similar_books`, `get_books_by_publisher`, `get_recommended_books` | BookCardList |
+| `get_book_details` | BookDetailCard |
+| `get_book_reviews` | ReviewList |
+| `add_to_cart`, `get_cart`, `remove_from_cart` | CartDisplay |
+| `checkout` | OrderConfirmation |
 
 ## Development Notes
 
-- **Fulltext index**: `bookSearch` index on Book.title and Book.description. Must exist before agent tools work. Created by `load_data.py`.
-- **Author names**: The Goodreads dataset only has author_id, not author names. Author nodes have `authorId` only.
-- **Shelf data**: Only top 10 shelves per book are loaded to keep graph manageable.
+- **Fulltext index**: `bookSearch` index on Book.title and Book.description. Created by `load_data.py`.
+- **Vector index**: `bookEmbedding` on Book.embedding (1024-dim, cosine). Created by `load_data.py`.
+- **Embeddings**: ~82% of books have descriptions and get embeddings. Books without descriptions are findable via fulltext but not vector search.
+- **SIMILAR_TO**: Computed from embedding cosine similarity with threshold 0.7, top 5 neighbors per book.
+- **Cart state**: Stored in-memory per session_id in `chat.py`. Cart is passed to agent via `invocation_state` and updated by commerce tools via `ToolContext`.
+- **Simulated prices**: Deterministic based on bookId hash. Format affects base price (Hardcover ~$25, Paperback ~$15, ebook ~$10).
 - **Memory vs book graph**: The agent uses two separate Neo4j graph layers — the book knowledge graph (queried by @tool functions) and the agent memory context graph (managed by neo4j-agent-memory). Both live in the same Neo4j database.
 
 ## Useful Cypher Queries (for verification)
@@ -164,22 +214,39 @@ Defines book-domain entity types for agent memory entity extraction: BOOK, AUTHO
 ```cypher
 -- Node counts
 MATCH (b:Book) RETURN count(b);
-MATCH (a:Author) RETURN count(a);
-MATCH (s:Shelf) RETURN count(s);
+MATCH (u:User) RETURN count(u);
+MATCH (r:Review) RETURN count(r);
+MATCH (p:Publisher) RETURN count(p);
 
--- Sample search
-CALL db.index.fulltext.queryNodes('bookSearch', 'detective noir') YIELD node, score
+-- Books with embeddings
+MATCH (b:Book) WHERE b.embedding IS NOT NULL RETURN count(b);
+
+-- SIMILAR_TO relationships
+MATCH ()-[r:SIMILAR_TO]->() RETURN count(r);
+
+-- Sample fulltext search
+CALL db.index.fulltext.queryNodes('bookSearch', 'fantasy adventure') YIELD node, score
 RETURN node.title, score LIMIT 5;
 
--- Top rated books in a genre
-MATCH (b:Book)-[:ON_SHELF]->(s:Shelf {name: 'mystery'})
+-- Top rated books
+MATCH (b:Book)
 WHERE b.averageRating > 4.0
 RETURN b.title, b.averageRating
 ORDER BY b.ratingsCount DESC LIMIT 10;
 
--- Similar books chain
-MATCH (b:Book {title: 'Gone Girl'})-[:SIMILAR_TO]->(s)
-RETURN s.title, s.averageRating;
+-- Most helpful reviews for a book
+MATCH (u:User)-[:WROTE_REVIEW]->(r:Review)-[:REVIEWS]->(b:Book)
+WHERE b.title CONTAINS 'Harry Potter'
+RETURN r.text, r.rating, r.nVotes
+ORDER BY r.nVotes DESC LIMIT 5;
+
+-- Collaborative filtering: users who liked book X also liked...
+MATCH (b:Book {title: 'The Hobbit'})<-[:REVIEWS]-(r:Review)<-[:WROTE_REVIEW]-(u:User)
+WHERE r.rating >= 4
+MATCH (u)-[:WROTE_REVIEW]->(r2:Review)-[:REVIEWS]->(rec:Book)
+WHERE rec <> b AND r2.rating >= 4
+RETURN rec.title, count(DISTINCT u) AS sharedUsers
+ORDER BY sharedUsers DESC LIMIT 10;
 
 -- Schema visualization
 CALL db.schema.visualization();

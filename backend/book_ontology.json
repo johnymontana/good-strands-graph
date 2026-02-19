@@ -1,35 +1,28 @@
 {
-  "name": "book_recommendation",
-  "version": "1.0",
-  "description": "Book recommendation domain ontology for mystery/thriller/crime fiction",
+  "name": "book_commerce",
+  "version": "2.0",
+  "description": "Book commerce and recommendation domain ontology with reviews and purchases",
   "entity_types": [
     {
       "name": "BOOK",
-      "description": "A book or novel, identified by title",
-      "subtypes": ["NOVEL", "SHORT_STORY", "ANTHOLOGY", "GRAPHIC_NOVEL"],
-      "attributes": ["title", "isbn", "publication_year", "rating"],
+      "description": "A book or publication, identified by title",
+      "subtypes": ["NOVEL", "SHORT_STORY", "ANTHOLOGY", "GRAPHIC_NOVEL", "NONFICTION", "AUDIOBOOK"],
+      "attributes": ["title", "isbn", "publication_year", "rating", "format"],
       "color": "#4CAF50"
     },
     {
-      "name": "AUTHOR",
-      "description": "A book author or writer",
+      "name": "PUBLISHER",
+      "description": "A book publisher or publishing house",
       "subtypes": [],
-      "attributes": ["name", "nationality"],
+      "attributes": ["name"],
       "color": "#2196F3"
     },
     {
-      "name": "GENRE",
-      "description": "A book genre, sub-genre, or shelf category",
-      "subtypes": ["MYSTERY", "THRILLER", "CRIME", "NOIR", "COZY_MYSTERY", "SUSPENSE", "DETECTIVE"],
-      "attributes": ["name"],
-      "color": "#FF9800"
-    },
-    {
-      "name": "SERIES",
-      "description": "A book series",
+      "name": "REVIEWER",
+      "description": "A person who has reviewed books",
       "subtypes": [],
-      "attributes": ["name", "book_count"],
-      "color": "#9C27B0"
+      "attributes": ["user_id"],
+      "color": "#FF9800"
     },
     {
       "name": "PERSON",
@@ -37,38 +30,51 @@
       "subtypes": [],
       "attributes": ["name"],
       "color": "#F44336"
+    },
+    {
+      "name": "ORDER",
+      "description": "A purchase order for books",
+      "subtypes": [],
+      "attributes": ["order_id", "total", "date"],
+      "color": "#9C27B0"
     }
   ],
   "relation_types": [
     {
-      "name": "WRITTEN_BY",
-      "description": "Book written by author",
+      "name": "PUBLISHED_BY",
+      "description": "Book published by publisher",
       "source_types": ["BOOK"],
-      "target_types": ["AUTHOR"]
+      "target_types": ["PUBLISHER"]
     },
     {
-      "name": "IN_GENRE",
-      "description": "Book belongs to genre",
-      "source_types": ["BOOK"],
-      "target_types": ["GENRE"]
-    },
-    {
-      "name": "PART_OF_SERIES",
-      "description": "Book is part of a series",
-      "source_types": ["BOOK"],
-      "target_types": ["SERIES"]
+      "name": "REVIEWED",
+      "description": "Reviewer reviewed a book",
+      "source_types": ["REVIEWER"],
+      "target_types": ["BOOK"]
     },
     {
       "name": "SIMILAR_TO",
-      "description": "Books are similar to each other",
+      "description": "Books are similar to each other based on content",
       "source_types": ["BOOK"],
       "target_types": ["BOOK"]
     },
     {
-      "name": "PREFERS",
-      "description": "User prefers a genre or author",
+      "name": "PURCHASED",
+      "description": "User purchased a book",
       "source_types": ["PERSON"],
-      "target_types": ["GENRE", "AUTHOR"]
+      "target_types": ["BOOK"]
+    },
+    {
+      "name": "ADDED_TO_CART",
+      "description": "User added a book to their cart",
+      "source_types": ["PERSON"],
+      "target_types": ["BOOK"]
+    },
+    {
+      "name": "PREFERS",
+      "description": "User prefers a type of book or publisher",
+      "source_types": ["PERSON"],
+      "target_types": ["BOOK", "PUBLISHER"]
     },
     {
       "name": "HAS_READ",
