@@ -4,7 +4,7 @@ import { Provider } from "@/components/ui/provider";
 export const metadata: Metadata = {
   title: "Good Strands Graph",
   description:
-    "AI-powered book recommendations for mystery, thriller, and crime fiction",
+    "AI-powered book recommendations and shopping",
 };
 
 export default function RootLayout({

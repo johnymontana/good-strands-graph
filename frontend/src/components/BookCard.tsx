@@ -3,30 +3,34 @@
 import {
   Badge,
   Box,
+  Button,
   Card,
   HStack,
   Image,
-  RatingGroup,
   Text,
 } from "@chakra-ui/react";
+import { LuShoppingCart, LuStar } from "react-icons/lu";
+import type { BookData } from "@/lib/api";
 
-export interface BookData {
-  bookId: string;
-  title: string;
-  averageRating?: number;
-  ratingsCount?: number;
-  numPages?: number;
-  publicationYear?: number;
-  imageUrl?: string;
-  description?: string;
-  shelves?: string[];
-  authorIds?: string[];
+interface BookCardProps {
+  book: BookData;
+  onAddToCart?: (bookId: string) => void;
 }
 
-export function BookCard({ book }: { book: BookData }) {
+function generatePrice(bookId: string): number {
+  let hash = 0;
+  for (let i = 0; i < bookId.length; i++) {
+    hash = (hash << 5) - hash + bookId.charCodeAt(i);
+    hash |= 0;
+  }
+  const base = Math.abs(hash) % 20;
+  return 9.99 + base * 0.5;
+}
+
+export function BookCard({ book, onAddToCart }: BookCardProps) {
   const rating = book.averageRating ?? 0;
-  const hasImage =
-    book.imageUrl && !book.imageUrl.includes("nophoto");
+  const hasImage = book.imageUrl && !book.imageUrl.includes("nophoto");
+  const price = generatePrice(book.bookId);
 
   return (
     <Card.Root
@@ -45,53 +49,70 @@ export function BookCard({ book }: { book: BookData }) {
           alt={book.title}
         />
       )}
-      <Box>
+      <Box flex="1">
         <Card.Body gap="1">
           <Card.Title textStyle="sm">{book.title}</Card.Title>
-          <HStack gap="2" mt="1">
-            <RatingGroup.Root
-              readOnly
-              allowHalf
-              defaultValue={rating}
-              count={5}
-              size="xs"
-              colorPalette="orange"
-            >
-              <RatingGroup.HiddenInput />
-              <RatingGroup.Control />
-            </RatingGroup.Root>
+
+          {book.publisher && (
             <Text textStyle="xs" color="fg.muted">
-              {rating.toFixed(2)}
+              {book.publisher}
             </Text>
+          )}
+
+          <HStack gap="2" mt="1">
+            <HStack gap="0.5">
+              <LuStar size={12} fill="orange" color="orange" />
+              <Text textStyle="xs" fontWeight="medium">
+                {rating.toFixed(2)}
+              </Text>
+            </HStack>
             {book.ratingsCount != null && (
               <Text textStyle="xs" color="fg.muted">
                 ({book.ratingsCount.toLocaleString()} ratings)
               </Text>
             )}
           </HStack>
+
           {book.description && (
-            <Text textStyle="xs" color="fg.muted" lineClamp={3} mt="1">
+            <Text textStyle="xs" color="fg.muted" lineClamp={2} mt="1">
               {book.description}
             </Text>
           )}
+
           <HStack gap="1" mt="1" flexWrap="wrap">
+            {book.format && (
+              <Badge size="sm" variant="subtle">
+                {book.format}
+              </Badge>
+            )}
             {book.numPages != null && (
               <Badge size="sm" variant="subtle">
                 {book.numPages} pages
               </Badge>
             )}
             {book.publicationYear != null && (
-              <Badge size="sm" variant="subtle">
+              <Badge size="sm" variant="outline">
                 {book.publicationYear}
               </Badge>
             )}
-            {book.shelves?.slice(0, 3).map((shelf) => (
-              <Badge key={shelf} size="sm" variant="outline">
-                {shelf}
-              </Badge>
-            ))}
           </HStack>
         </Card.Body>
+        <Card.Footer gap="2" pt="0">
+          <Text textStyle="md" fontWeight="bold" color="green.600">
+            ${price.toFixed(2)}
+          </Text>
+          {onAddToCart && (
+            <Button
+              size="xs"
+              variant="subtle"
+              colorPalette="blue"
+              onClick={() => onAddToCart(book.bookId)}
+            >
+              <LuShoppingCart />
+              Add to Cart
+            </Button>
+          )}
+        </Card.Footer>
       </Box>
     </Card.Root>
   );
