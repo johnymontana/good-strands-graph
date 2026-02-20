@@ -1,7 +1,7 @@
 """Fetch author data for the Goodreads 10k loader.
 
 Downloads:
-  1. Neo4j goodreads_books_10k.json and writes data/10k-book-authors.json (JSONL)
+  1. S3 10k-books-authors.json and writes data/10k-book-authors.json (JSONL)
      with one line per book: {"book_id": "<id>", "author_ids": ["<id1>", ...]}
   2. Gist 10k-books-filtered_authors.json to data/10k-authors-demo.json (JSONL)
 
@@ -20,7 +20,7 @@ except ImportError:
     urlopen = None  # type: ignore
 
 DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data"
-BOOKS_WITH_AUTHORS_URL = "https://data.neo4j.com/goodreads/goodreads_books_10k.json"
+BOOKS_WITH_AUTHORS_URL = "https://devrel-goodreads-graph.s3.us-west-2.amazonaws.com/10k-books-authors.json"
 AUTHORS_URL = (
     "https://gist.githubusercontent.com/jpadams/5e3322fce95671f61db447f896f90a6d/"
     "raw/15408f58c4e7348f88a375d15dfab16be0eec0f3/10k-books-filtered_authors.json"
@@ -41,21 +41,12 @@ def main() -> None:
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-    print("Fetching books with authors from Neo4j...")
+    print("Fetching books with authors from S3...")
     text = fetch_url(BOOKS_WITH_AUTHORS_URL)
-    lines = [line.strip() for line in text.strip().split("\n") if line.strip()]
     with open(BOOK_AUTHORS_FILE, "w", encoding="utf-8") as f:
-        for line in lines:
-            obj = json.loads(line)
-            book_id = obj.get("book_id")
-            authors = obj.get("authors") or []
-            author_ids = [a.get("author_id") for a in authors if a.get("author_id")]
-            if book_id:
-                f.write(
-                    json.dumps({"book_id": str(book_id), "author_ids": author_ids})
-                    + "\n"
-                )
-    print(f"  Wrote {BOOK_AUTHORS_FILE} ({len(lines):,} books)")
+        f.write(text)
+    num_lines = len([l for l in text.strip().split("\n") if l.strip()])
+    print(f"  Wrote {BOOK_AUTHORS_FILE} ({num_lines:,} books)")
 
     print("Fetching author details from Gist...")
     text = fetch_url(AUTHORS_URL)
