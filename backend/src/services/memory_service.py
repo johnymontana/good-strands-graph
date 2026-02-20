@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
+
+from pydantic import SecretStr
 
 from neo4j_agent_memory import MemoryClient, MemorySettings
 from neo4j_agent_memory.config.settings import (
@@ -17,6 +20,15 @@ from ..config import get_settings
 logger = logging.getLogger(__name__)
 
 
+def _neo4j_env() -> tuple[str, str, str, str]:
+    """Neo4j credentials from os.environ (same source as load_data after config load_dotenv)."""
+    uri = os.environ.get("NEO4J_URI", "neo4j://localhost:7687")
+    user = os.environ.get("NEO4J_USER") or os.environ.get("NEO4J_USERNAME", "neo4j")
+    password = os.environ.get("NEO4J_PASSWORD") or os.environ.get("NEO4J_PWD", "password")
+    database = os.environ.get("NEO4J_DATABASE", "neo4j")
+    return uri, user, password, database
+
+
 class BookMemoryService:
     """Service managing conversation memory via Neo4j Agent Memory.
 
@@ -25,13 +37,22 @@ class BookMemoryService:
     """
 
     def __init__(self) -> None:
+        uri, user, password, database = _neo4j_env()
+        # Log what we're using (no secrets) so you can confirm we read the same .env as load_data
+        logger.info(
+            "Neo4j memory: uri=%s, user=%s, database=%s, password_len=%d",
+            uri.split("//")[-1].split("/")[0] if "//" in uri else "(redacted)",
+            user,
+            database,
+            len(password) if password else 0,
+        )
         settings = get_settings()
         memory_settings = MemorySettings(
             neo4j=Neo4jConfig(
-                uri=settings.neo4j_uri,
-                user=settings.neo4j_user,
-                password=settings.neo4j_password,
-                database=settings.neo4j_database,
+                uri=uri,
+                username=user,
+                password=SecretStr(password),
+                database=database,
             ),
             embedding=EmbeddingConfig(
                 provider=EmbeddingProvider.BEDROCK,
