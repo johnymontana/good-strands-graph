@@ -8,10 +8,16 @@ Agentic commerce book recommendation app powered by Neo4j context graphs, AWS St
 good-strands-graph/
 ├── data/
 │   ├── 10k-books-demo.json                              # 10K books, JSONL (13.5MB)
-│   └── 10k-book-reviews-demo.json                       # 70K reviews, JSONL (73MB)
+│   ├── 10k-book-reviews-demo.json                       # 70K reviews, JSONL (73MB)
+│   ├── 10k-book-authors.json                             # optional: book_id → author_ids (from make fetch-author-data)
+│   ├── 10k-authors-demo.json                             # optional: author details JSONL (from make fetch-author-data)
+│   └── book-embeddings.json                              # optional: Book.embedding dump by bookId (make dump-embeddings)
 ├── backend/                                              # Python FastAPI + Strands Agent
 │   ├── pyproject.toml
-│   ├── load_data.py                                      # Neo4j batch data loader (4-pass)
+│   ├── load_data.py                                      # Neo4j batch data loader (books, authors, reviews, embeddings, SIMILAR_TO)
+│   ├── scripts/
+│   │   ├── fetch_author_data.py                          # download author data into data/
+│   │   └── book_embeddings.py                            # dump/load Book embeddings by bookId (make dump-embeddings, load-embeddings)
 │   ├── book_ontology.json                                # Custom entity schema for agent memory
 │   └── src/
 │       ├── main.py                                       # FastAPI app entry point
@@ -60,15 +66,17 @@ good-strands-graph/
 (:Book {bookId, title, description, averageRating, ratingsCount, numPages, format,
         isbn, imageUrl, publicationYear, publisher, embedding})
 (:Publisher {name})
+(:Author {authorId, name, averageRating, textReviewsCount, ratingsCount})
 (:User {userId})
 (:Review {reviewId, rating, text, dateAdded, nVotes, nComments})
 
 (:Book)-[:PUBLISHED_BY]->(:Publisher)
+(:Author)-[:AUTHORED]->(:Book)
 (:User)-[:WROTE_REVIEW]->(:Review)-[:REVIEWS]->(:Book)
 (:Book)-[:SIMILAR_TO {score}]->(:Book)   -- computed from description embeddings
 ```
 
-**Indexes**: fulltext `bookSearch` on Book.title+description, vector `bookEmbedding` (1024-dim cosine) on Book.embedding, plus property indexes on Book.title, Book.averageRating, Book.isbn, Book.publicationYear, Review.rating.
+**Indexes**: fulltext `bookSearch` on Book.title+description, vector `bookEmbedding` (1024-dim cosine) on Book.embedding, plus property indexes on Book.title, Book.averageRating, Book.isbn, Book.publicationYear, Author.authorId, Author.name, Review.rating.
 
 ## Environment Variables
 
@@ -105,7 +113,10 @@ make dev            # Start backend (port 8000) + frontend (port 3000)
 ```bash
 make install-backend    # uv sync in backend/
 make install-frontend   # npm install in frontend/
-make load-data          # Load data into Neo4j (4 passes: books, reviews, embeddings, SIMILAR_TO)
+make fetch-author-data # Download author data into data/ (optional; for Author nodes and AUTHORED)
+make dump-embeddings   # Export Book embeddings to data/book-embeddings.json (by bookId)
+make load-embeddings   # Load Book embeddings from data/book-embeddings.json into Neo4j
+make load-data          # Load data into Neo4j (books, optional authors+AUTHORED, reviews, embeddings, SIMILAR_TO)
 make backend            # Start FastAPI on port 8000
 make frontend           # Start Next.js on port 3000
 make dev                # Start both backend and frontend
@@ -133,11 +144,12 @@ API docs at http://localhost:8000/docs, frontend at http://localhost:3000
 
 ### Data Loader (`backend/load_data.py`)
 
-4-pass batch loader:
+Batch loader (author passes run only if `data/10k-book-authors.json` exists; run `make fetch-author-data` to create it):
 1. **Books + Publishers**: MERGE Book nodes with all properties, MERGE Publisher nodes with PUBLISHED_BY relationships
-2. **Users + Reviews**: MERGE User nodes, CREATE Review nodes with WROTE_REVIEW and REVIEWS relationships
-3. **Embeddings**: Compute description embeddings via Amazon Titan Embed Text v2, store as `Book.embedding`
-4. **SIMILAR_TO**: KNN via vector index, top 5 neighbors with cosine similarity >= 0.7
+2. **Authors + AUTHORED** (optional): From `data/10k-book-authors.json`, MERGE Author nodes by authorId, then MERGE (Author)-[:AUTHORED]->(Book). If `data/10k-authors-demo.json` exists, hydrate Author nodes with name, averageRating, textReviewsCount, ratingsCount
+3. **Users + Reviews**: MERGE User nodes, CREATE Review nodes with WROTE_REVIEW and REVIEWS relationships
+4. **Embeddings**: Compute description embeddings via Amazon Titan Embed Text v2, store as `Book.embedding`
+5. **SIMILAR_TO**: KNN via vector index, top 5 neighbors with cosine similarity >= 0.7
 
 ### Agent Tools (in `backend/src/agents/book_agent.py`)
 
@@ -206,6 +218,8 @@ The `tool_results` array contains structured data from each tool call (book list
 
 ## Development Notes
 
+- **Author data**: To load Author nodes and AUTHORED relationships, run `make fetch-author-data` once to download `data/10k-book-authors.json` and `data/10k-authors-demo.json` from Neo4j and the Gist. Then `make load-data` will run the author passes. If those files are missing, the loader skips Author/AUTHORED and continues.
+- **Book embeddings dump/load**: Embeddings are addressed by `bookId`. Use `make dump-embeddings` to export to `data/book-embeddings.json` (JSONL) and `make load-embeddings` to set them back. Pass 3 in `load_data.py` only computes embeddings for books where `embedding IS NULL`, so restored embeddings are not overwritten.
 - **Fulltext index**: `bookSearch` index on Book.title and Book.description. Created by `load_data.py`.
 - **Vector index**: `bookEmbedding` on Book.embedding (1024-dim, cosine). Created by `load_data.py`.
 - **Embeddings**: ~82% of books have descriptions and get embeddings. Books without descriptions are findable via fulltext but not vector search.
@@ -219,9 +233,18 @@ The `tool_results` array contains structured data from each tool call (book list
 ```cypher
 -- Node counts
 MATCH (b:Book) RETURN count(b);
+MATCH (p:Publisher) RETURN count(p);
+MATCH (a:Author) RETURN count(a);
 MATCH (u:User) RETURN count(u);
 MATCH (r:Review) RETURN count(r);
-MATCH (p:Publisher) RETURN count(p);
+
+-- AUTHORED relationships
+MATCH ()-[r:AUTHORED]->() RETURN count(r);
+
+-- Books by author name
+MATCH (a:Author)-[:AUTHORED]->(b:Book)
+WHERE a.name CONTAINS 'Rowling'
+RETURN b.title, a.name;
 
 -- Books with embeddings
 MATCH (b:Book) WHERE b.embedding IS NOT NULL RETURN count(b);

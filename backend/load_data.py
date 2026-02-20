@@ -1,11 +1,12 @@
 """Load Goodreads books and reviews into Neo4j.
 
 Reads JSONL data files and batch-loads into Neo4j using UNWIND + MERGE.
-Runs in 4 passes:
+Runs in multiple passes:
   1. Books + Publishers
-  2. Users + Reviews (WROTE_REVIEW / REVIEWS relationships)
-  3. Compute embeddings on Book descriptions (Amazon Titan Embed v2)
-  4. Compute SIMILAR_TO relationships via vector KNN
+  2. Authors + AUTHORED (optional; if author data files exist)
+  3. Users + Reviews (WROTE_REVIEW / REVIEWS relationships)
+  4. Compute embeddings on Book descriptions (Amazon Titan Embed v2)
+  5. Compute SIMILAR_TO relationships via vector KNN
 
 Usage:
     python load_data.py
@@ -37,6 +38,8 @@ EMBEDDING_MODEL_ID = os.environ.get(
 DATA_DIR = Path(__file__).parent.parent / "data"
 BOOKS_FILE = DATA_DIR / "10k-books-demo.json"
 REVIEWS_FILE = DATA_DIR / "10k-book-reviews-demo.json"
+BOOK_AUTHORS_FILE = DATA_DIR / "10k-book-authors.json"
+AUTHORS_FILE = DATA_DIR / "10k-authors-demo.json"
 BATCH_SIZE = 500
 EMBEDDING_BATCH_SIZE = 10
 EMBEDDING_DIMENSIONS = 1024
@@ -89,9 +92,11 @@ def create_constraints_and_indexes(driver):
     statements = [
         "CREATE CONSTRAINT book_id IF NOT EXISTS FOR (b:Book) REQUIRE b.bookId IS UNIQUE",
         "CREATE CONSTRAINT publisher_name IF NOT EXISTS FOR (p:Publisher) REQUIRE p.name IS UNIQUE",
+        "CREATE CONSTRAINT author_id IF NOT EXISTS FOR (a:Author) REQUIRE a.authorId IS UNIQUE",
         "CREATE CONSTRAINT user_id IF NOT EXISTS FOR (u:User) REQUIRE u.userId IS UNIQUE",
         "CREATE CONSTRAINT review_id IF NOT EXISTS FOR (r:Review) REQUIRE r.reviewId IS UNIQUE",
         "CREATE INDEX book_title IF NOT EXISTS FOR (b:Book) ON (b.title)",
+        "CREATE INDEX author_name IF NOT EXISTS FOR (a:Author) ON (a.name)",
         "CREATE INDEX book_rating IF NOT EXISTS FOR (b:Book) ON (b.averageRating)",
         "CREATE INDEX book_isbn IF NOT EXISTS FOR (b:Book) ON (b.isbn)",
         "CREATE INDEX book_pub_year IF NOT EXISTS FOR (b:Book) ON (b.publicationYear)",
@@ -205,8 +210,127 @@ def pass1_books_publishers(driver):
     return count
 
 
+def iter_book_author_pairs(path: Path):
+    """Yield (book_id, author_id) pairs from book-authors file.
+
+    Supports JSONL with either:
+      {"book_id": "x", "author_ids": ["a", "b"]}
+      {"book_id": "x", "authors": [{"author_id": "a", "role": ""}]}
+    """
+    for record in read_jsonl(path):
+        book_id = record.get("book_id")
+        if not book_id:
+            continue
+        author_ids = record.get("author_ids")
+        if author_ids is None:
+            authors = record.get("authors") or []
+            author_ids = [
+                a.get("author_id") for a in authors if a.get("author_id")
+            ]
+        for aid in author_ids:
+            if aid:
+                yield str(book_id), str(aid)
+
+
 # ---------------------------------------------------------------------------
-# Pass 2: Users + Reviews
+# Pass 2a: Authors merge + AUTHORED
+# ---------------------------------------------------------------------------
+
+
+def pass2a_authors_and_authored(driver):
+    """Merge Author nodes and create (Author)-[:AUTHORED]->(Book) from book-author links."""
+    print("\n=== Pass 2a: Authors + AUTHORED ===")
+
+    pairs = list(iter_book_author_pairs(BOOK_AUTHORS_FILE))
+    if not pairs:
+        print("  No book-author pairs found")
+        return
+
+    unique_author_ids = sorted({aid for _, aid in pairs})
+
+    # Merge Author nodes (batch by unique author_id)
+    merge_query = """
+    UNWIND $batch AS row
+    MERGE (a:Author {authorId: row.author_id})
+    """
+    with driver.session(database=NEO4J_DATABASE) as session:
+        for i in range(0, len(unique_author_ids), BATCH_SIZE):
+            batch = [
+                {"author_id": aid}
+                for aid in unique_author_ids[i : i + BATCH_SIZE]
+            ]
+            session.execute_write(lambda tx: tx.run(merge_query, batch=batch))
+    print(f"  Merged {len(unique_author_ids):,} Author nodes")
+
+    # Create AUTHORED relationships
+    authored_query = """
+    UNWIND $batch AS row
+    MATCH (b:Book {bookId: row.book_id})
+    MATCH (a:Author {authorId: row.author_id})
+    MERGE (a)-[:AUTHORED]->(b)
+    """
+    with driver.session(database=NEO4J_DATABASE) as session:
+        for i in range(0, len(pairs), BATCH_SIZE):
+            batch = [
+                {"book_id": bid, "author_id": aid}
+                for bid, aid in pairs[i : i + BATCH_SIZE]
+            ]
+            session.execute_write(lambda tx: tx.run(authored_query, batch=batch))
+
+    print(f"  Created AUTHORED from {len(pairs):,} book-author pairs")
+    return len(unique_author_ids), len(pairs)
+
+
+# ---------------------------------------------------------------------------
+# Pass 2b: Hydrate Author properties
+# ---------------------------------------------------------------------------
+
+
+def pass2b_hydrate_authors(driver):
+    """Set Author name and stats from authors JSONL."""
+    if not AUTHORS_FILE.exists():
+        print("\n=== Pass 2b: Hydrate Authors (skipped, no authors file) ===")
+        return
+
+    print("\n=== Pass 2b: Hydrate Authors ===")
+    query = """
+    UNWIND $batch AS row
+    MATCH (a:Author {authorId: row.author_id})
+    SET a.name = row.name,
+        a.averageRating = row.average_rating,
+        a.textReviewsCount = row.text_reviews_count,
+        a.ratingsCount = row.ratings_count
+    """
+    batch = []
+    count = 0
+    with driver.session(database=NEO4J_DATABASE) as session:
+        for record in read_jsonl(AUTHORS_FILE):
+            author_id = record.get("author_id")
+            if not author_id:
+                continue
+            name = record.get("name") or ""
+            ar = record.get("average_rating")
+            trc = record.get("text_reviews_count")
+            rc = record.get("ratings_count")
+            batch.append({
+                "author_id": str(author_id),
+                "name": name,
+                "average_rating": safe_float(ar),
+                "text_reviews_count": safe_int(trc),
+                "ratings_count": safe_int(rc),
+            })
+            count += 1
+            if len(batch) >= BATCH_SIZE:
+                session.execute_write(lambda tx: tx.run(query, batch=batch))
+                batch = []
+        if batch:
+            session.execute_write(lambda tx: tx.run(query, batch=batch))
+
+    print(f"  Pass 2b complete: hydrated {count:,} authors")
+
+
+# ---------------------------------------------------------------------------
+# Pass 3: Users + Reviews
 # ---------------------------------------------------------------------------
 
 
@@ -287,7 +411,11 @@ def compute_embedding(bedrock_client, text: str) -> list[float]:
 
 
 def pass3_embeddings(driver):
-    """Pass 3: Compute and store embeddings for books with descriptions."""
+    """Pass 3: Compute and store embeddings for books with descriptions.
+
+    Only books with b.embedding IS NULL are considered, so existing embeddings
+    (e.g. restored via load-embeddings) are never overwritten.
+    """
     print("\n=== Pass 3: Computing embeddings ===")
 
     bedrock = boto3.client("bedrock-runtime", region_name=AWS_REGION)
@@ -413,9 +541,11 @@ def print_stats(driver):
     queries = [
         ("Books", "MATCH (b:Book) RETURN count(b) AS count"),
         ("Publishers", "MATCH (p:Publisher) RETURN count(p) AS count"),
+        ("Authors", "MATCH (a:Author) RETURN count(a) AS count"),
         ("Users", "MATCH (u:User) RETURN count(u) AS count"),
         ("Reviews", "MATCH (r:Review) RETURN count(r) AS count"),
         ("PUBLISHED_BY", "MATCH ()-[r:PUBLISHED_BY]->() RETURN count(r) AS count"),
+        ("AUTHORED", "MATCH ()-[r:AUTHORED]->() RETURN count(r) AS count"),
         ("WROTE_REVIEW", "MATCH ()-[r:WROTE_REVIEW]->() RETURN count(r) AS count"),
         ("REVIEWS", "MATCH ()-[r:REVIEWS]->() RETURN count(r) AS count"),
         ("SIMILAR_TO", "MATCH ()-[r:SIMILAR_TO]->() RETURN count(r) AS count"),
@@ -456,6 +586,11 @@ def main():
 
         create_constraints_and_indexes(driver)
         pass1_books_publishers(driver)
+        if BOOK_AUTHORS_FILE.exists():
+            pass2a_authors_and_authored(driver)
+            pass2b_hydrate_authors(driver)
+        else:
+            print("\nAuthor data not found, skipping Author/AUTHORED (optional)")
         pass2_reviews(driver)
         create_fulltext_index(driver)
         create_vector_index(driver)
