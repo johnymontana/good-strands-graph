@@ -29,6 +29,8 @@ load-embeddings:
 	cd backend && uv run python scripts/book_embeddings.py load
 
 # Load Goodreads data into Neo4j (run once)
+# Downloads embeddings from S3 if not present locally, then loads them
+# Only computes missing embeddings via Bedrock if needed
 load-data:
 	cd backend && uv run python load_data.py
 

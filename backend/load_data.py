@@ -5,7 +5,7 @@ Runs in multiple passes:
   1. Books + Publishers
   2. Authors + AUTHORED (optional; if author data files exist)
   3. Users + Reviews (WROTE_REVIEW / REVIEWS relationships)
-  4. Compute embeddings on Book descriptions (Amazon Titan Embed v2)
+  4. Load embeddings from S3 or compute them (Amazon Titan Embed v2)
   5. Compute SIMILAR_TO relationships via vector KNN
 
 Usage:
@@ -18,6 +18,7 @@ import json
 import os
 import sys
 import time
+import urllib.request
 from pathlib import Path
 
 import boto3
@@ -40,6 +41,8 @@ BOOKS_FILE = DATA_DIR / "10k-books-demo.json"
 REVIEWS_FILE = DATA_DIR / "10k-book-reviews-demo.json"
 BOOK_AUTHORS_FILE = DATA_DIR / "10k-book-authors.json"
 AUTHORS_FILE = DATA_DIR / "10k-authors-demo.json"
+EMBEDDINGS_FILE = DATA_DIR / "book-embeddings.json"
+EMBEDDINGS_S3_URL = "https://devrel-goodreads-graph.s3.us-west-2.amazonaws.com/10k-book-embeddings.json"
 BATCH_SIZE = 500
 EMBEDDING_BATCH_SIZE = 10
 EMBEDDING_DIMENSIONS = 1024
@@ -391,8 +394,57 @@ def pass2_reviews(driver):
 
 
 # ---------------------------------------------------------------------------
-# Pass 3: Compute embeddings
+# Pass 3: Download and load embeddings, or compute if needed
 # ---------------------------------------------------------------------------
+
+
+def download_embeddings_from_s3():
+    """Download embeddings from S3 if local file doesn't exist."""
+    if EMBEDDINGS_FILE.exists():
+        print(f"  Embeddings file already exists at {EMBEDDINGS_FILE}")
+        return True
+
+    print(f"  Downloading embeddings from {EMBEDDINGS_S3_URL}...")
+    try:
+        EMBEDDINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        urllib.request.urlretrieve(EMBEDDINGS_S3_URL, EMBEDDINGS_FILE)
+        print(f"  Downloaded embeddings to {EMBEDDINGS_FILE}")
+        return True
+    except Exception as e:
+        print(f"  Error downloading embeddings: {e}")
+        return False
+
+
+def load_embeddings_from_file(driver):
+    """Load embeddings from JSONL file into Neo4j."""
+    if not EMBEDDINGS_FILE.exists():
+        print(f"  Embeddings file not found at {EMBEDDINGS_FILE}")
+        return 0
+
+    print(f"  Loading embeddings from {EMBEDDINGS_FILE}...")
+    query = """
+    UNWIND $batch AS row
+    MATCH (b:Book {bookId: row.bookId})
+    SET b.embedding = row.embedding
+    """
+    batch = []
+    total = 0
+    with driver.session(database=NEO4J_DATABASE) as session:
+        for line in open(EMBEDDINGS_FILE, "r", encoding="utf-8"):
+            line = line.strip()
+            if not line:
+                continue
+            batch.append(json.loads(line))
+            total += 1
+            if len(batch) >= BATCH_SIZE:
+                session.execute_write(lambda tx: tx.run(query, batch=batch))
+                batch = []
+
+        if batch:
+            session.execute_write(lambda tx: tx.run(query, batch=batch))
+
+    print(f"  Loaded {total:,} embeddings from file")
+    return total
 
 
 def compute_embedding(bedrock_client, text: str) -> list[float]:
@@ -410,13 +462,9 @@ def compute_embedding(bedrock_client, text: str) -> list[float]:
     return result["embedding"]
 
 
-def pass3_embeddings(driver):
-    """Pass 3: Compute and store embeddings for books with descriptions.
-
-    Only books with b.embedding IS NULL are considered, so existing embeddings
-    (e.g. restored via load-embeddings) are never overwritten.
-    """
-    print("\n=== Pass 3: Computing embeddings ===")
+def compute_missing_embeddings(driver):
+    """Compute embeddings for books that still don't have them."""
+    print("\n=== Computing missing embeddings ===")
 
     bedrock = boto3.client("bedrock-runtime", region_name=AWS_REGION)
 
@@ -438,7 +486,7 @@ def pass3_embeddings(driver):
 
     if total == 0:
         print("  No embeddings to compute")
-        return
+        return 0
 
     count = 0
     errors = 0
@@ -469,7 +517,30 @@ def pass3_embeddings(driver):
         # Small delay to respect rate limits
         time.sleep(0.1)
 
-    print(f"  Pass 3 complete: {count:,} embeddings computed ({errors} errors)")
+    print(f"  Computed {count:,} embeddings ({errors} errors)")
+    return count
+
+
+def pass3_embeddings(driver):
+    """Pass 3: Download and load embeddings from S3, or compute if needed.
+
+    Strategy:
+    1. Download embeddings from S3 if not present locally
+    2. Load embeddings from file into Neo4j
+    3. Compute any missing embeddings using Bedrock
+    """
+    print("\n=== Pass 3: Loading/Computing embeddings ===")
+
+    # Try to download and load embeddings from S3
+    if download_embeddings_from_s3():
+        loaded = load_embeddings_from_file(driver)
+        if loaded > 0:
+            print(f"  Successfully loaded {loaded:,} embeddings from file")
+
+    # Compute any remaining embeddings
+    computed = compute_missing_embeddings(driver)
+
+    print(f"  Pass 3 complete: embeddings loaded/computed")
 
 
 # ---------------------------------------------------------------------------
