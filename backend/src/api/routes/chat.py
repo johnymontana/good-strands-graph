@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import logging
 import uuid
@@ -93,6 +94,44 @@ class SearchRequest(BaseModel):
     limit: int = Field(default=10, ge=1, le=100)
 
 
+def _parse_text_value(text: str) -> Any:
+    """Parse a text value that may be JSON or Python repr (single-quoted dicts/lists)."""
+    # Try JSON first
+    try:
+        return json.loads(text)
+    except (json.JSONDecodeError, TypeError):
+        pass
+    # Strands SDK often returns Python repr with single quotes — use ast.literal_eval
+    try:
+        return ast.literal_eval(text)
+    except (ValueError, SyntaxError):
+        pass
+    return text
+
+
+def _extract_result_data(tr: dict) -> Any:
+    """Extract data from a toolResult block, handling various Strands SDK formats."""
+    raw_content = tr.get("content", [])
+
+    # Format 1: content is a list of {json: ...} or {text: ...} blocks
+    for content in raw_content:
+        if isinstance(content, dict):
+            if "json" in content:
+                return content["json"]
+            if "text" in content:
+                return _parse_text_value(content["text"])
+
+    # Format 2: content itself is a string (some Strands versions)
+    if isinstance(raw_content, str):
+        return _parse_text_value(raw_content)
+
+    # Format 3: content is a list with a single string element
+    if raw_content and isinstance(raw_content[0], str):
+        return _parse_text_value(raw_content[0])
+
+    return None
+
+
 def extract_tool_results(agent) -> list[ToolResultItem]:
     """Extract tool call results from the agent's conversation messages."""
     tool_results = []
@@ -106,6 +145,8 @@ def extract_tool_results(agent) -> list[ToolResultItem]:
                     tu = block["toolUse"]
                     tool_use_map[tu["toolUseId"]] = tu["name"]
 
+    logger.info("extract_tool_results: tool_use_map keys=%s", list(tool_use_map.values()))
+
     # Extract toolResult data from user messages (tool results come back as user role)
     for msg in agent.messages:
         if msg.get("role") == "user":
@@ -115,26 +156,26 @@ def extract_tool_results(agent) -> list[ToolResultItem]:
                     tool_use_id = tr.get("toolUseId", "")
                     tool_name = tool_use_map.get(tool_use_id)
 
-                    if tool_name and tool_name in _TOOL_NAMES_TO_EXPOSE:
-                        for content in tr.get("content", []):
-                            data = None
-                            if isinstance(content, dict):
-                                if "json" in content:
-                                    data = content["json"]
-                                elif "text" in content:
-                                    try:
-                                        data = json.loads(content["text"])
-                                    except (json.JSONDecodeError, TypeError):
-                                        pass
-                            if data is not None:
-                                tool_results.append(
-                                    ToolResultItem(
-                                        tool_name=tool_name,
-                                        tool_use_id=tool_use_id,
-                                        data=data,
-                                    )
-                                )
+                    logger.info(
+                        "extract_tool_results: tool=%s, content_type=%s, content_keys=%s, content_preview=%s",
+                        tool_name,
+                        type(tr.get("content")).__name__,
+                        [type(c).__name__ for c in tr.get("content", [])] if isinstance(tr.get("content"), list) else "N/A",
+                        str(tr.get("content", ""))[:300],
+                    )
 
+                    if tool_name and tool_name in _TOOL_NAMES_TO_EXPOSE:
+                        data = _extract_result_data(tr)
+                        if data is not None:
+                            tool_results.append(
+                                ToolResultItem(
+                                    tool_name=tool_name,
+                                    tool_use_id=tool_use_id,
+                                    data=data,
+                                )
+                            )
+
+    logger.info("extract_tool_results: found %d results", len(tool_results))
     return tool_results
 
 
@@ -165,16 +206,7 @@ def extract_tool_calls(agent) -> list[ToolCallItem]:
                         continue
 
                     status = tr.get("status", "success")
-                    result_data = None
-                    for content in tr.get("content", []):
-                        if isinstance(content, dict):
-                            if "json" in content:
-                                result_data = content["json"]
-                            elif "text" in content:
-                                try:
-                                    result_data = json.loads(content["text"])
-                                except (json.JSONDecodeError, TypeError):
-                                    result_data = content["text"]
+                    result_data = _extract_result_data(tr)
 
                     tool_calls.append(
                         ToolCallItem(
