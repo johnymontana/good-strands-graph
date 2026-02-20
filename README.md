@@ -23,6 +23,9 @@ Use this as a **hackathon template** for building agentic commerce applications 
 4. **Neo4j provides the data** — the book knowledge graph (10K books with reviews, embeddings, and SIMILAR_TO relationships) and the agent memory context graph (conversations, extracted entities, preferences)
 5. **The frontend renders rich interactive cards** — book cards with covers, ratings, prices, and "Add to Cart" buttons; review lists; shopping cart; and order confirmation — all embedded inline in the chat
 
+
+![agentic commerce screenshot](img/screenshot1.png)
+
 ## Tech Stack
 
 | Layer | Technology | Purpose |
