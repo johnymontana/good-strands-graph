@@ -1,7 +1,9 @@
 """Fetch author data for the Goodreads 10k loader.
 
-Downloads S3 10k-books-authors.json and writes data/10k-book-authors.json (JSONL)
-with one line per book: {"book_id": "<id>", "author_ids": ["<id1>", ...]}
+Downloads:
+  1. Neo4j goodreads_books_10k.json and writes data/10k-book-authors.json (JSONL)
+     with one line per book: {"book_id": "<id>", "author_ids": ["<id1>", ...]}
+  2. S3 10k-books-authors.json to data/10k-authors-demo.json (JSONL)
 
 Run from repo root or backend: python backend/scripts/fetch_author_data.py
 """
@@ -18,8 +20,10 @@ except ImportError:
     urlopen = None  # type: ignore
 
 DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data"
-BOOKS_WITH_AUTHORS_URL = "https://devrel-goodreads-graph.s3.us-west-2.amazonaws.com/10k-books-authors.json"
+BOOKS_WITH_AUTHORS_URL = "https://data.neo4j.com/goodreads/goodreads_books_10k.json"
+AUTHORS_URL = "https://devrel-goodreads-graph.s3.us-west-2.amazonaws.com/10k-books-authors.json"
 BOOK_AUTHORS_FILE = DATA_DIR / "10k-book-authors.json"
+AUTHORS_FILE = DATA_DIR / "10k-authors-demo.json"
 
 
 def fetch_url(url: str) -> str:
@@ -34,12 +38,29 @@ def main() -> None:
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-    print("Fetching books with authors from S3...")
+    print("Fetching books with authors from Neo4j...")
     text = fetch_url(BOOKS_WITH_AUTHORS_URL)
+    lines = [line.strip() for line in text.strip().split("\n") if line.strip()]
     with open(BOOK_AUTHORS_FILE, "w", encoding="utf-8") as f:
+        for line in lines:
+            obj = json.loads(line)
+            book_id = obj.get("book_id")
+            authors = obj.get("authors") or []
+            author_ids = [a.get("author_id") for a in authors if a.get("author_id")]
+            if book_id:
+                f.write(
+                    json.dumps({"book_id": str(book_id), "author_ids": author_ids})
+                    + "\n"
+                )
+    print(f"  Wrote {BOOK_AUTHORS_FILE} ({len(lines):,} books)")
+
+    print("Fetching author details from S3...")
+    text = fetch_url(AUTHORS_URL)
+    with open(AUTHORS_FILE, "w", encoding="utf-8") as f:
         f.write(text)
     num_lines = len([l for l in text.strip().split("\n") if l.strip()])
-    print(f"  Wrote {BOOK_AUTHORS_FILE} ({num_lines:,} books)")
+    print(f"  Wrote {AUTHORS_FILE} ({num_lines:,} authors)")
+
     print("Done. Run make load-data to load Author nodes and AUTHORED.")
 
 
