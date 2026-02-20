@@ -25,6 +25,7 @@ out/
 .idea/
 *.swp
 *.swo
+.cursor/
 
 # Data (too large for git)
 data/*.json
