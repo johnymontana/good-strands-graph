@@ -65,12 +65,36 @@ export interface ToolResult {
   data: any;
 }
 
+export interface ToolCallData {
+  tool_use_id: string;
+  tool_name: string;
+  input: Record<string, unknown>;
+  result: unknown;
+  status: string;
+}
+
+// --- Agent Config Types ---
+
+export interface ToolInfo {
+  name: string;
+  description: string;
+  category: string;
+}
+
+export interface AgentConfig {
+  model_id: string;
+  aws_region: string;
+  system_prompt: string;
+  tools: ToolInfo[];
+}
+
 // --- API Types ---
 
 export interface ChatResponse {
   response: string;
   session_id: string;
   tool_results: ToolResult[];
+  tool_calls: ToolCallData[];
 }
 
 export interface ConversationMessage {
@@ -90,6 +114,14 @@ export async function sendMessage(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ message, session_id: sessionId }),
   });
+  if (!res.ok) {
+    throw new Error(`API error: ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function getAgentConfig(): Promise<AgentConfig> {
+  const res = await fetch(`${API_BASE}/api/chat/config`);
   if (!res.ok) {
     throw new Error(`API error: ${res.status}`);
   }

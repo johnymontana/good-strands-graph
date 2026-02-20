@@ -23,8 +23,10 @@ Open [http://localhost:3000](http://localhost:3000). The frontend talks to the F
 
 ```
 ChatInterface
+  ├── AgentConfigPanel                          (collapsible agent config + tools)
   └── MessageBubble
         ├── ReactMarkdown (agent text)
+        ├── ToolCallDisplay[]                   (collapsible tool call inspector)
         └── ToolResultRenderer (dispatches by tool_name)
               ├── BookCardList → BookCard[]     (search, popular, similar, recommended)
               ├── BookDetailCard                (single book details)
@@ -37,8 +39,10 @@ ChatInterface
 
 | Component | File | Description |
 |-----------|------|-------------|
-| `ChatInterface` | `src/components/ChatInterface.tsx` | Main chat UI. Manages messages, session, loading state. Provides `onAddToCart`, `onRemoveFromCart`, `onCheckout` callbacks. |
-| `MessageBubble` | `src/components/MessageBubble.tsx` | Renders a single message. User messages as plain text, assistant messages as markdown + tool result cards below. |
+| `ChatInterface` | `src/components/ChatInterface.tsx` | Main chat UI. Manages messages, session, loading state. Includes `AgentConfigPanel`. Provides `onAddToCart`, `onRemoveFromCart`, `onCheckout` callbacks. |
+| `AgentConfigPanel` | `src/components/AgentConfigPanel.tsx` | Collapsible accordion showing model ID, system prompt, and all tools grouped by category. Fetches from `GET /api/chat/config`. |
+| `MessageBubble` | `src/components/MessageBubble.tsx` | Renders a single message. User messages as plain text, assistant messages as markdown + collapsible tool calls + tool result cards. |
+| `ToolCallDisplay` | `src/components/ToolCallDisplay.tsx` | Single tool call inspector: tool name, status badge (ok/error), input args preview, expandable full input/result JSON. Filters `tool_context`. |
 | `ToolResultRenderer` | `src/components/ToolResultRenderer.tsx` | Dispatches a `ToolResult` to the correct card component based on `tool_name`. |
 | `BookCard` | `src/components/BookCard.tsx` | Compact horizontal card: cover image, title, publisher, star rating, description snippet, format/year badges, price, "Add to Cart" button. |
 | `BookCardList` | `src/components/BookCardList.tsx` | Vertical stack of `BookCard` components for list results. |
@@ -67,8 +71,11 @@ ChatInterface
 - **`CartItem`**, **`CartData`** — shopping cart state
 - **`OrderData`** — checkout confirmation
 - **`ToolResult`** — `{tool_name, tool_use_id, data}` from the backend
-- **`ChatResponse`** — `{response, session_id, tool_results[]}`
+- **`ToolCallData`** — `{tool_use_id, tool_name, input, result, status}` for tool call transparency
+- **`ToolInfo`**, **`AgentConfig`** — agent configuration (model, system prompt, tools)
+- **`ChatResponse`** — `{response, session_id, tool_results[], tool_calls[]}`
 - **`sendMessage(message, sessionId)`** — `POST /api/chat`
+- **`getAgentConfig()`** — `GET /api/chat/config`
 - **`getHistory(sessionId)`** — `GET /api/chat/history/{sessionId}`
 
 ## Purchase Flow
@@ -86,7 +93,7 @@ Prices are deterministically generated from `bookId` hash (Hardcover ~$25, Paper
 
 Standard Chakra v3 snippet files in `src/components/ui/`:
 
-- `provider.tsx` — wraps `ChakraProvider` with `ColorModeProvider` (next-themes)
+- `provider.tsx` — wraps `ChakraProvider` with `ColorModeProvider` (loaded via `next/dynamic` with `ssr: false` to avoid hydration mismatch)
 - `color-mode.tsx` — `useColorMode`, `ColorModeButton`, `LightMode`/`DarkMode`
 - `tooltip.tsx` — Tooltip wrapper with portal
 - `toaster.tsx` — Toaster with `createToaster` (bottom-end placement)

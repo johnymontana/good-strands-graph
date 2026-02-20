@@ -13,13 +13,15 @@ import {
   VStack,
 } from "@chakra-ui/react";
 import { sendMessage } from "@/lib/api";
-import type { ToolResult } from "@/lib/api";
+import type { ToolResult, ToolCallData } from "@/lib/api";
 import { MessageBubble } from "./MessageBubble";
+import { AgentConfigPanel } from "./AgentConfigPanel";
 
 interface Message {
   role: string;
   content: string;
   toolResults?: ToolResult[];
+  toolCalls?: ToolCallData[];
 }
 
 function generateSessionId(): string {
@@ -52,6 +54,7 @@ export function ChatInterface() {
           role: "assistant",
           content: res.response,
           toolResults: res.tool_results,
+          toolCalls: res.tool_calls,
         },
       ]);
     } catch (err) {
@@ -101,6 +104,9 @@ export function ChatInterface() {
           </Text>
         </Box>
 
+        {/* Agent config panel */}
+        <AgentConfigPanel />
+
         {/* Messages area */}
         <Box
           flex="1"
@@ -128,6 +134,7 @@ export function ChatInterface() {
                 role={msg.role}
                 content={msg.content}
                 toolResults={msg.toolResults}
+                toolCalls={msg.toolCalls}
                 onAddToCart={handleAddToCart}
                 onRemoveFromCart={handleRemoveFromCart}
                 onCheckout={handleCheckout}

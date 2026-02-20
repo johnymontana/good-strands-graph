@@ -198,6 +198,13 @@ The chat interface renders structured data from tool calls as interactive cards:
 
 The `ToolResultRenderer` component dispatches each tool result to the appropriate card type based on `tool_name`.
 
+## Agent Transparency
+
+The frontend includes built-in agent transparency features:
+
+- **Agent Config Panel** — collapsible accordion at the top of the chat showing the model ID, AWS region, full system prompt, and all 15 tools grouped by category (book discovery, commerce, memory). Fetches from `GET /api/chat/config`.
+- **Tool Call Inspector** — each assistant message shows a collapsible "N tool calls" section. Expanding it reveals each tool call with its name, status (ok/error), input arguments, and raw result JSON. The `tool_context` parameter is filtered out for readability.
+
 ## Custom Ontology
 
 The agent memory uses a custom ontology (`backend/book_ontology.json`) tailored to the book commerce domain. This teaches the entity extraction system to recognize:
@@ -243,11 +250,12 @@ good-strands-graph/
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `GET` | `/health` | Health check |
-| `POST` | `/api/chat` | Send message to agent; returns `{response, session_id, tool_results[]}` |
+| `POST` | `/api/chat` | Send message to agent; returns `{response, session_id, tool_results[], tool_calls[]}` |
+| `GET` | `/api/chat/config` | Agent configuration (model ID, system prompt, tool list with categories) |
 | `GET` | `/api/chat/history/{session_id}` | Get conversation history |
 | `POST` | `/api/chat/search` | Semantic search past conversations |
 
-The `tool_results` array in the chat response contains structured data from each tool call, which the frontend renders as rich interactive cards. See `backend/README.md` for full API documentation.
+The `tool_results` array contains structured data for rich card rendering. The `tool_calls` array contains all tool calls with inputs and raw results for the transparency UI. See `backend/README.md` for full API documentation.
 
 Interactive API docs available at **http://localhost:8000/docs** when the backend is running.
 

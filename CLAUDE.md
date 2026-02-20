@@ -17,20 +17,22 @@ good-strands-graph/
 │       ├── main.py                                       # FastAPI app entry point
 │       ├── config.py                                     # Pydantic Settings (env vars)
 │       ├── agents/
-│       │   ├── book_agent.py                             # Strands Agent + 11 @tool functions
+│       │   ├── book_agent.py                             # Strands Agent + 15 tools (11 @tool + 4 memory)
 │       │   └── prompts.py                                # System prompt
 │       ├── services/
 │       │   └── memory_service.py                         # neo4j-agent-memory MemoryClient
 │       └── api/routes/
-│           └── chat.py                                   # POST /api/chat (with tool_results), GET /api/chat/history
+│           └── chat.py                                   # POST /api/chat (with tool_results + tool_calls), GET /api/chat/history, GET /api/chat/config
 ├── frontend/                                             # Next.js App Router + Chakra UI v3
 │   ├── src/app/
 │   │   ├── layout.tsx                                    # Root layout with Chakra Provider
 │   │   └── page.tsx                                      # Main chat page
 │   ├── src/components/
 │   │   ├── ChatInterface.tsx                             # Chat UI with session + cart management
-│   │   ├── MessageBubble.tsx                             # Message display with markdown + tool results
+│   │   ├── MessageBubble.tsx                             # Message display with markdown + tool calls + tool results
 │   │   ├── ToolResultRenderer.tsx                        # Dispatches tool results to correct card type
+│   │   ├── ToolCallDisplay.tsx                           # Collapsible tool call detail (input/output inspector)
+│   │   ├── AgentConfigPanel.tsx                          # Collapsible panel showing model, system prompt, tools
 │   │   ├── BookCard.tsx                                  # Book card with rating, cover, price, Add to Cart
 │   │   ├── BookCardList.tsx                              # List of BookCards for search results
 │   │   ├── BookDetailCard.tsx                            # Expanded single-book detail view
@@ -139,7 +141,7 @@ API docs at http://localhost:8000/docs, frontend at http://localhost:3000
 
 ### Agent Tools (in `backend/src/agents/book_agent.py`)
 
-11 `@tool` decorated functions:
+11 `@tool` decorated functions (plus 4 memory tools = 15 total):
 
 **Book discovery** (query Neo4j via Cypher):
 - `search_books` — hybrid vector + fulltext search on title/description
@@ -168,18 +170,21 @@ Defines book commerce entity types for agent memory: BOOK, PUBLISHER, REVIEWER, 
 
 ### API Endpoints
 
-- `POST /api/chat` — send message to agent, returns `{response, session_id, tool_results[]}`
+- `POST /api/chat` — send message to agent, returns `{response, session_id, tool_results[], tool_calls[]}`
+- `GET /api/chat/config` — agent configuration (model ID, system prompt, tool list with categories)
 - `GET /api/chat/history/{session_id}` — conversation history
 - `POST /api/chat/search` — semantic search past conversations
 
-The `tool_results` array contains structured data from each tool call (book lists, reviews, cart state, order confirmations) which the frontend renders as rich interactive cards.
+The `tool_results` array contains structured data from each tool call (book lists, reviews, cart state, order confirmations) which the frontend renders as rich interactive cards. The `tool_calls` array contains all tool calls with their inputs and raw results, used by the frontend's tool call transparency UI.
 
 ## Frontend Architecture
 
-- **Chakra UI v3** with snippets (`components/ui/provider.tsx`, `color-mode.tsx`)
+- **Chakra UI v3** with snippets (`components/ui/provider.tsx`, `color-mode.tsx`); `ColorModeProvider` loaded via `next/dynamic` with `ssr: false` to avoid hydration mismatch with `next-themes`
 - **react-markdown** for rendering agent text responses
 - **ChatInterface** manages session state, message list, input, loading states, and cart action callbacks
-- **MessageBubble** renders user (plain text) and assistant (markdown + tool result cards) messages
+- **AgentConfigPanel** collapsible accordion showing model ID, system prompt, and all tools grouped by category (book_discovery, commerce, memory); fetches from `GET /api/chat/config`
+- **MessageBubble** renders user (plain text) and assistant (markdown + collapsible tool calls + tool result cards) messages
+- **ToolCallDisplay** collapsible per-tool-call inspector showing tool name, status badge (ok/error), input args, and raw result JSON; filters out `tool_context` from display
 - **ToolResultRenderer** dispatches tool results to the correct card component based on `tool_name`
 - **BookCard** displays book with cover image, star rating, price, format/publisher badges, and "Add to Cart" button
 - **BookCardList** renders a vertical list of BookCards for search/popular/similar results
@@ -187,7 +192,7 @@ The `tool_results` array contains structured data from each tool call (book list
 - **ReviewCard** / **ReviewList** renders user reviews with ratings, helpful votes, and dates
 - **CartDisplay** shows cart items with totals and checkout button
 - **OrderConfirmation** shows post-checkout success with order ID and summary
-- API client in `lib/api.ts` with full TypeScript types for all tool result shapes
+- API client in `lib/api.ts` with full TypeScript types for all tool result shapes, tool call data, and agent config
 
 ### Tool → Component Mapping
 
