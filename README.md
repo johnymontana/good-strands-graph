@@ -61,10 +61,7 @@ Use this as a **hackathon template** for building agentic commerce applications 
 
 - **Python 3.11+** and [uv](https://docs.astral.sh/uv/) (Python package manager)
 - **Node.js 18+** and npm
-- **Neo4j** — either:
-  - [Neo4j Desktop](https://neo4j.com/download/) (local)
-  - [Neo4j Aura](https://neo4j.com/cloud/aura/) (cloud, free tier available)
-  - Docker: `docker run -p 7474:7474 -p 7687:7687 -e NEO4J_AUTH=neo4j/password neo4j:5`
+- **Neo4j** — a [Neo4j Aura Free](https://neo4j.com/cloud/aura-free/) instance (see step 2 below), or a local Neo4j via Docker/Desktop
 - **AWS account** with Bedrock access (Claude Sonnet + Titan Embeddings enabled in your region)
 - **AWS credentials** configured (`aws configure` or environment variables)
 
@@ -78,18 +75,32 @@ make install
 
 This installs both backend (Python via uv) and frontend (Node.js via npm) dependencies.
 
-### 2. Configure environment
+### 2. Create a Neo4j database
+
+The easiest option is a free Neo4j Aura instance:
+
+1. Go to [console.neo4j.io](https://console.neo4j.io/) and sign up (or log in)
+2. Click **New Instance** and select the **Free** tier
+3. Choose a region and click **Create**
+4. **Save the generated password** — it is only shown once. Also note the **Connection URI** (e.g. `neo4j+s://xxxxxxxx.databases.neo4j.io`)
+
+> Alternatively, you can run Neo4j locally with [Neo4j Desktop](https://neo4j.com/download/) or Docker:
+> ```bash
+> docker run -p 7474:7474 -p 7687:7687 -e NEO4J_AUTH=neo4j/password neo4j:5
+> ```
+
+### 3. Configure environment
 
 ```bash
 cp .env.example backend/.env
 ```
 
-Edit `backend/.env` with your settings:
+Edit `backend/.env` with your Neo4j Aura credentials and AWS settings:
 
 ```env
-NEO4J_URI=neo4j://localhost:7687
+NEO4J_URI=neo4j+s://xxxxxxxx.databases.neo4j.io
 NEO4J_USER=neo4j
-NEO4J_PASSWORD=<your-neo4j-password>
+NEO4J_PASSWORD=<password-from-aura>
 NEO4J_DATABASE=neo4j
 AWS_REGION=us-west-2
 BEDROCK_MODEL_ID=us.anthropic.claude-sonnet-4-20250514-v1:0
@@ -97,7 +108,9 @@ BEDROCK_EMBEDDING_MODEL_ID=amazon.titan-embed-text-v2:0
 CORS_ORIGINS=http://localhost:3000
 ```
 
-### 3. Load the book data
+> If running Neo4j locally, use `NEO4J_URI=neo4j://localhost:7687` instead.
+
+### 4. Load the book data
 
 ```bash
 make load-data
@@ -112,7 +125,7 @@ This runs the 4-pass data loader:
 
 Progress is logged throughout. Passes 1-2 are fast; passes 3-4 require AWS Bedrock access and take longer.
 
-### 4. Run the application
+### 5. Run the application
 
 ```bash
 make dev
