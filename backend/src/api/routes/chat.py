@@ -262,12 +262,15 @@ async def chat_with_agent(request: ChatRequest) -> ChatResponse:
         memory_service = get_memory_service()
         agent = get_book_agent()
 
-        # Store user message
-        await memory_service.add_conversation_message(
-            session_id=session_id,
-            role="user",
-            content=request.message,
-        )
+        # Store user message (non-critical — don't fail the request)
+        try:
+            await memory_service.add_conversation_message(
+                session_id=session_id,
+                role="user",
+                content=request.message,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to store user message in memory: {e}")
 
         # Get or initialize cart for this session
         cart = _cart_store.get(session_id, {})
@@ -291,12 +294,15 @@ async def chat_with_agent(request: ChatRequest) -> ChatResponse:
         tool_results = extract_tool_results(agent)
         tool_calls = extract_tool_calls(agent)
 
-        # Store assistant response
-        await memory_service.add_conversation_message(
-            session_id=session_id,
-            role="assistant",
-            content=response_text,
-        )
+        # Store assistant response (non-critical — don't fail the request)
+        try:
+            await memory_service.add_conversation_message(
+                session_id=session_id,
+                role="assistant",
+                content=response_text,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to store assistant message in memory: {e}")
 
         return ChatResponse(
             response=response_text,
