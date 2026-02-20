@@ -31,7 +31,8 @@ load-embeddings:
 # Load Goodreads data into Neo4j (run once)
 # Downloads embeddings from S3 if not present locally, then loads them
 # Only computes missing embeddings via Bedrock if needed
-load-data:
+# Fetches author data before loading
+load-data: fetch-author-data
 	cd backend && uv run python load_data.py
 
 # Start backend (FastAPI on port 8000)
