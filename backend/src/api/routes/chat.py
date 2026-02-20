@@ -11,6 +11,8 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from ...agents.book_agent import get_book_agent
+from ...agents.prompts import BOOK_AGENT_SYSTEM_PROMPT
+from ...config import get_settings
 from ...services.memory_service import get_memory_service
 
 logger = logging.getLogger(__name__)
@@ -48,12 +50,36 @@ class ToolResultItem(BaseModel):
     data: Any
 
 
+class ToolCallItem(BaseModel):
+    tool_use_id: str
+    tool_name: str
+    input: dict[str, Any]
+    result: Any = None
+    status: str = "success"
+
+
 class ChatResponse(BaseModel):
     response: str = Field(..., description="Agent response")
     session_id: str = Field(..., description="Session ID for this conversation")
     tool_results: list[ToolResultItem] = Field(
         default_factory=list, description="Structured tool results for rich rendering"
     )
+    tool_calls: list[ToolCallItem] = Field(
+        default_factory=list, description="All tool calls with inputs and raw results"
+    )
+
+
+class ToolInfo(BaseModel):
+    name: str
+    description: str
+    category: str
+
+
+class AgentConfigResponse(BaseModel):
+    model_id: str
+    aws_region: str
+    system_prompt: str
+    tools: list[ToolInfo]
 
 
 class ConversationMessage(BaseModel):
@@ -112,6 +138,89 @@ def extract_tool_results(agent) -> list[ToolResultItem]:
     return tool_results
 
 
+def extract_tool_calls(agent) -> list[ToolCallItem]:
+    """Extract all tool calls with their inputs and results from agent messages."""
+    # Build map: toolUseId -> {name, input} from assistant messages
+    tool_use_info: dict[str, dict[str, Any]] = {}
+    for msg in agent.messages:
+        if msg.get("role") == "assistant":
+            for block in msg.get("content", []):
+                if isinstance(block, dict) and "toolUse" in block:
+                    tu = block["toolUse"]
+                    tool_use_info[tu["toolUseId"]] = {
+                        "name": tu["name"],
+                        "input": tu.get("input", {}),
+                    }
+
+    # Match with toolResult from user messages
+    tool_calls = []
+    for msg in agent.messages:
+        if msg.get("role") == "user":
+            for block in msg.get("content", []):
+                if isinstance(block, dict) and "toolResult" in block:
+                    tr = block["toolResult"]
+                    tool_use_id = tr.get("toolUseId", "")
+                    info = tool_use_info.get(tool_use_id)
+                    if not info:
+                        continue
+
+                    status = tr.get("status", "success")
+                    result_data = None
+                    for content in tr.get("content", []):
+                        if isinstance(content, dict):
+                            if "json" in content:
+                                result_data = content["json"]
+                            elif "text" in content:
+                                try:
+                                    result_data = json.loads(content["text"])
+                                except (json.JSONDecodeError, TypeError):
+                                    result_data = content["text"]
+
+                    tool_calls.append(
+                        ToolCallItem(
+                            tool_use_id=tool_use_id,
+                            tool_name=info["name"],
+                            input=info["input"],
+                            result=result_data,
+                            status=status,
+                        )
+                    )
+
+    return tool_calls
+
+
+# Tool metadata for the /config endpoint
+_TOOL_METADATA: list[dict[str, str]] = [
+    {"name": "search_books", "description": "Search books by title, description, or semantic meaning", "category": "book_discovery"},
+    {"name": "get_book_details", "description": "Get full details for a specific book including publisher and review summary", "category": "book_discovery"},
+    {"name": "get_book_reviews", "description": "Get reviews for a specific book", "category": "book_discovery"},
+    {"name": "find_similar_books", "description": "Find books similar to a given book using embedding-based similarity", "category": "book_discovery"},
+    {"name": "get_popular_books", "description": "Get the most popular books sorted by number of ratings", "category": "book_discovery"},
+    {"name": "get_books_by_publisher", "description": "Get books by a specific publisher", "category": "book_discovery"},
+    {"name": "get_recommended_books", "description": "Get book recommendations based on collaborative filtering", "category": "book_discovery"},
+    {"name": "add_to_cart", "description": "Add a book to the shopping cart", "category": "commerce"},
+    {"name": "get_cart", "description": "View the current shopping cart", "category": "commerce"},
+    {"name": "remove_from_cart", "description": "Remove a book from the shopping cart", "category": "commerce"},
+    {"name": "checkout", "description": "Complete the purchase (simulated)", "category": "commerce"},
+    {"name": "search_context", "description": "Search memory for relevant context from past conversations", "category": "memory"},
+    {"name": "add_memory", "description": "Save important information to memory", "category": "memory"},
+    {"name": "get_user_preferences", "description": "Retrieve known user preferences", "category": "memory"},
+    {"name": "get_entity_graph", "description": "Explore relationship networks around entities", "category": "memory"},
+]
+
+
+@router.get("/config", response_model=AgentConfigResponse)
+async def get_agent_config() -> AgentConfigResponse:
+    """Get agent configuration including system prompt, model info, and tool list."""
+    settings = get_settings()
+    return AgentConfigResponse(
+        model_id=settings.bedrock_model_id,
+        aws_region=settings.aws_region,
+        system_prompt=BOOK_AGENT_SYSTEM_PROMPT,
+        tools=[ToolInfo(**t) for t in _TOOL_METADATA],
+    )
+
+
 @router.post("", response_model=ChatResponse)
 async def chat_with_agent(request: ChatRequest) -> ChatResponse:
     """Send a message to the book recommendation agent."""
@@ -146,8 +255,9 @@ async def chat_with_agent(request: ChatRequest) -> ChatResponse:
             # Cart may have been updated via invocation_state in tool_context
             _cart_store[session_id] = cart
 
-        # Extract structured tool results
+        # Extract structured tool results and raw tool calls
         tool_results = extract_tool_results(agent)
+        tool_calls = extract_tool_calls(agent)
 
         # Store assistant response
         await memory_service.add_conversation_message(
@@ -160,6 +270,7 @@ async def chat_with_agent(request: ChatRequest) -> ChatResponse:
             response=response_text,
             session_id=session_id,
             tool_results=tool_results,
+            tool_calls=tool_calls,
         )
 
     except Exception as e:
