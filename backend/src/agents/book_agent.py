@@ -608,7 +608,7 @@ def create_book_agent() -> Agent:
 
     return Agent(
         model=BedrockModel(
-            model_id=settings.bedrock_model_id,
+            model_id=settings.bedrock_model_id_for_invocation,
             region_name=settings.aws_region,
         ),
         tools=[*book_tools, *commerce_tools, *memory_tools],
