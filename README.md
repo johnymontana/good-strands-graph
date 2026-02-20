@@ -8,27 +8,7 @@ Use this as a **hackathon template** for building agentic commerce applications 
 
 ## Architecture
 
-```
-┌──────────────────────┐     ┌──────────────────────────────────────┐     ┌──────────────────┐
-│   Next.js +          │     │          FastAPI Backend              │     │                  │
-│   Chakra UI v3       │────>│                                      │────>│      Neo4j       │
-│   (Chat + Commerce)  │<────│  Strands Agent                       │<────│                  │
-│                      │     │  ┌──────────┬──────────┬───────────┐ │     │  Book Graph      │
-│  - BookCard          │     │  │ 7 Book   │ 4 Cart   │ 4 Memory  │ │     │  (10K books,     │
-│  - BookDetailCard    │     │  │ Discovery│ Commerce │ Context   │ │     │   70K reviews,   │
-│  - ReviewList        │     │  │ Tools    │ Tools    │ Tools     │ │     │   publishers,    │
-│  - CartDisplay       │     │  └──────────┴──────────┴───────────┘ │     │   SIMILAR_TO)    │
-│  - OrderConfirmation │     │                                      │     │                  │
-│  - ToolResultRenderer│     │  neo4j-agent-memory                  │     │  Vector Index    │
-│                      │     │  (entity extraction + embeddings)    │     │  (1024-dim       │
-│                      │     │                                      │     │   embeddings)    │
-└──────────────────────┘     └──────────────────────────────────────┘     │                  │
-                                         │                               │  Agent Memory    │
-                                         v                               │  (conversations, │
-                                   AWS Bedrock                           │   entities,      │
-                                   (Claude + Titan Embeddings)           │   preferences)   │
-                                                                         └──────────────────┘
-```
+![architecture diagrm](img/arch_diag.png)
 
 ### How It Works
 
