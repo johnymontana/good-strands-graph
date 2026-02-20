@@ -18,7 +18,7 @@ install-frontend:
 
 # Fetch author data (book-author links + author details) into data/
 fetch-author-data:
-	python backend/scripts/fetch_author_data.py
+	cd backend && uv run python scripts/fetch_author_data.py
 
 # Dump Book embeddings to data/book-embeddings.json (JSONL by bookId)
 dump-embeddings:
